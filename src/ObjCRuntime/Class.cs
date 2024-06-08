@@ -508,20 +508,51 @@ namespace ObjCRuntime {
 
 		static MemberInfo? ResolveToken (Assembly assembly, Module? module, uint token)
 		{
+#if !NET
+			return ResolveTokenNonManagedStatic (assembly, module, token);
+#else
+			if (!Runtime.IsManagedStaticRegistrar)
+				return ResolveTokenNonManagedStatic (assembly, module, token);
+
+			// Finally resolve the token.
+			var token_type = token & 0xFF000000;
+			switch (token & 0xFF000000) {
+			case 0x02000000: // TypeDef
+				var type = RegistrarHelper.LookupRegisteredType (assembly, token & 0x00FFFFFF);
+#if LOG_TYPELOAD
+				Runtime.NSLog ($"ResolveToken (0x{token:X}) => Type: {type.FullName}");
+#endif
+				return type;
+			case 0x06000000: // Method
+				throw ErrorHelper.CreateError (8054, Errors.MX8054 /* Can't resolve metadata tokens for methods when using the managed static registrar (token: 0x{0}). */, token.ToString ("x"));
+			default:
+				throw ErrorHelper.CreateError (8021, $"Unknown implicit token type: 0x{token_type:X}.");
+			}
+#endif // !NET
+		}
+
+#if NET
+		// This method should never be called when using the managed static registrar, so assert that never happens by throwing an exception in that case.
+		// This method doesn't necessarily work with NativeAOT, but this is covered by the exception, because the managed static registrar is required for NativeAOT.
+		//
+		// IL2026: Using member 'System.Reflection.Module.ResolveMethod(Int32)' which has 'RequiresUnreferencedCodeAttribute' can break functionality when trimming application code. Trimming changes metadata tokens.
+		// IL2026: Using member 'System.Reflection.Module.ResolveType(Int32)' which has 'RequiresUnreferencedCodeAttribute' can break functionality when trimming application code. Trimming changes metadata tokens.
+		[UnconditionalSuppressMessage("", "IL2026", Justification = "The APIs this method tries to access are marked by other means, so this is linker-safe.")]
+#endif
+		static MemberInfo? ResolveTokenNonManagedStatic (Assembly assembly, Module? module, uint token)
+		{
+#if NET
+			// This method should never be called when using the managed static registrar, so assert that never happens by throwing an exception in that case.
+			// This also takes care of NativeAOT, because the managed static registrar is required when using NativeAOT.
+			if (Runtime.IsManagedStaticRegistrar)
+				throw new System.Diagnostics.UnreachableException ();
+#endif
+
 			// Finally resolve the token.
 			var token_type = token & 0xFF000000;
 			switch (token & 0xFF000000) {
 			case 0x02000000: // TypeDef
 				Type type;
-#if NET
-				if (Runtime.IsManagedStaticRegistrar) {
-					type = RegistrarHelper.LookupRegisteredType (assembly, token & 0x00FFFFFF);
-#if LOG_TYPELOAD
-					Runtime.NSLog ($"ResolveToken (0x{token:X}) => Type: {type.FullName}");
-#endif
-					return type;
-				}
-#endif // NET
 				if (module is null) {
 					throw ErrorHelper.CreateError (8053, Errors.MX8053 /* Could not resolve the module in the assembly {0}. */, assembly.FullName);
 				} else {
@@ -532,9 +563,6 @@ namespace ObjCRuntime {
 #endif
 				return type;
 			case 0x06000000: // Method
-				if (Runtime.IsManagedStaticRegistrar)
-					throw ErrorHelper.CreateError (8054, Errors.MX8054 /* Can't resolve metadata tokens for methods when using the managed static registrar (token: 0x{0}). */, token.ToString ("x"));
-
 				if (module is null)
 					throw ErrorHelper.CreateError (8053, Errors.MX8053 /* Could not resolve the module in the assembly {0}. */, assembly.FullName);
 
@@ -764,29 +792,26 @@ namespace ObjCRuntime {
 		internal static extern void objc_registerClassPair (IntPtr cls);
 
 		[DllImport (Messaging.LIBOBJC_DYLIB)]
-		[return: MarshalAs (UnmanagedType.U1)]
-		static extern bool class_addIvar (IntPtr cls, IntPtr name, IntPtr size, byte alignment, IntPtr types);
+		static extern byte class_addIvar (IntPtr cls, IntPtr name, IntPtr size, byte alignment, IntPtr types);
 
 		internal static bool class_addIvar (IntPtr cls, string name, IntPtr size, byte alignment, string types)
 		{
 			using var namePtr = new TransientString (name);
 			using var typesPtr = new TransientString (types);
-			return class_addIvar (cls, namePtr, size, alignment, typesPtr);
+			return class_addIvar (cls, namePtr, size, alignment, typesPtr) != 0;
 		}
 
 		[DllImport (Messaging.LIBOBJC_DYLIB)]
-		[return: MarshalAs (UnmanagedType.U1)]
-		static extern bool class_addMethod (IntPtr cls, IntPtr name, IntPtr imp, IntPtr types);
+		static extern byte class_addMethod (IntPtr cls, IntPtr name, IntPtr imp, IntPtr types);
 
 		internal static bool class_addMethod (IntPtr cls, IntPtr name, IntPtr imp, string types)
 		{
 			using var typesPtr = new TransientString (types);
-			return class_addMethod (cls, name, imp, typesPtr);
+			return class_addMethod (cls, name, imp, typesPtr) != 0;
 		}
 
 		[DllImport (Messaging.LIBOBJC_DYLIB)]
-		[return: MarshalAs (UnmanagedType.U1)]
-		internal extern static bool class_addProtocol (IntPtr cls, IntPtr protocol);
+		internal extern static byte class_addProtocol (IntPtr cls, IntPtr protocol);
 
 		[DllImport (Messaging.LIBOBJC_DYLIB)]
 		internal static extern IntPtr class_getName (IntPtr cls);
@@ -813,8 +838,7 @@ namespace ObjCRuntime {
 		internal extern static IntPtr class_getInstanceMethod (IntPtr cls, IntPtr sel);
 
 		[DllImport (Messaging.LIBOBJC_DYLIB, CharSet = CharSet.Ansi)]
-		[return: MarshalAs (UnmanagedType.U1)]
-		extern unsafe static bool class_addProperty (IntPtr cls, IntPtr name, IntPtr* attributes, int count);
+		extern unsafe static byte class_addProperty (IntPtr cls, IntPtr name, IntPtr* attributes, int count);
 
 		internal static bool class_addProperty (IntPtr cls, string name, objc_attribute_prop [] attributes, int count)
 		{
@@ -823,7 +847,7 @@ namespace ObjCRuntime {
 			bool retval = false;
 			unsafe {
 				fixed (IntPtr* ptrsPtr = ptrs) {
-					retval = class_addProperty (cls, namePtr, ptrsPtr, count);
+					retval = class_addProperty (cls, namePtr, ptrsPtr, count) != 0;
 				}
 			}
 			FreeStringPtrs (ptrs);
