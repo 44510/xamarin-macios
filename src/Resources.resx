@@ -171,10 +171,6 @@
 		<value>A target framework (--target-framework) must be specified.</value>
 	</data>
 
-	<data name="BI0087" xml:space="preserve">
-		<value>Xamarin.Mac Classic binding projects are not supported anymore. Please upgrade the binding project to a Xamarin.Mac Unified binding project.</value>
-	</data>
-	
 	<data name="BI0088" xml:space="preserve">
 		<value>Internal error: don't know how to create ref/out (input) code for {0} in {1}. Please file a bug report with a test case (https://github.com/xamarin/xamarin-macios/issues/new).</value>
 	</data>
@@ -541,6 +537,10 @@
 
 	<data name="BI1086" xml:space="preserve">
 		<value>Found {0} {1} attributes on the module {2}. At most one was expected.</value>
+	</data>
+
+	<data name="BI1087" xml:space="preserve">
+		<value>Missing value for the 'LibraryName' property for the '[ErrorDomain]' attribute for {0} (e.g. '[ErrorDomain ("MyDomain", LibraryName = "__Internal")]')</value>
 	</data>
 
 	<data name="BI1101" xml:space="preserve">
