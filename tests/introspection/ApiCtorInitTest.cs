@@ -138,10 +138,15 @@ namespace Introspection {
 			case "PKIdentityButton":
 				return true;
 #endif
+#if !XAMCORE_5_0
+			case "GKHybridStrategist":
+				return true; // GKHybridStrategist has been removed from our bindings
+#endif
 			}
 
-#if !NET
 			switch (type.Namespace) {
+			case "SafetyKit":
+				return true; // SafetyKit requires a custom entitlement, and will throw exceptions if it's not present.
 #if __IOS__
 			case "WatchKit":
 				return true; // WatchKit has been removed from iOS.
@@ -150,7 +155,6 @@ namespace Introspection {
 				return true; // QTKit has been removed from macos.
 #endif
 			}
-#endif // !NET
 
 			// skip types that we renamed / rewrite since they won't behave correctly (by design)
 			if (SkipDueToRejectedTypes (type))
@@ -322,6 +326,11 @@ namespace Introspection {
 				if (!t.IsPublic || !NSObjectType.IsAssignableFrom (t))
 					continue;
 
+				// we only care about wrapper types (types with a native counterpart), and they all have a Register attribute.
+				var typeRegisterAttribute = t.GetCustomAttribute<RegisterAttribute> (false);
+				if (typeRegisterAttribute is null)
+					continue;
+
 				int designated = 0;
 				foreach (var ctor in t.GetConstructors ()) {
 					if (ctor.GetCustomAttribute<DesignatedInitializerAttribute> () is null)
@@ -330,7 +339,7 @@ namespace Introspection {
 				}
 				// that does not mean that inlining is not required, i.e. it might be useful, even needed
 				// but it's not a showstopper for subclassing so we'll start with those cases
-				if (designated > 1)
+				if (designated > 0)
 					continue;
 
 				var base_class = t.BaseType;

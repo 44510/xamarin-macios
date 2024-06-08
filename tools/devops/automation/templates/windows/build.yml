@@ -25,6 +25,10 @@ parameters:
 - name: xqaCertPass
   type: string
 
+- name: retryCount
+  type: number
+  default: 3
+
 steps:
 
 - template: ../common/checkout.yml
@@ -36,11 +40,46 @@ steps:
 - pwsh: $(System.DefaultWorkingDirectory)/xamarin-macios/tools/devops/automation/scripts/show_env.ps1
   displayName: 'Dump Environment'
 
-- task: DownloadPipelineArtifact@2
-  displayName: Download artifacts
-  inputs:
-    allowFailedBuilds: true
-    path: $(Build.SourcesDirectory)/artifacts
+- ${{ if or(contains(variables['Build.Reason'], 'ResourceTrigger'), contains(variables['Build.Reason'], 'BuildCompletion'), contains(variables['Build.DefinitionName'], 'xamarin-macios-ci-tests'), contains(variables['Build.DefinitionName'], 'xamarin-macios-pr-tests')) }}:
+  - download: macios
+    displayName: Download Build.props
+    artifact: Build.props
+
+  - download: macios
+    displayName: Download package-test-libraries
+    artifact: package-test-libraries
+
+  - download: macios
+    displayName: Download build-configuration
+    artifact: build-configuration
+
+  - download: macios
+    displayName: Download not-signed-package
+    artifact: not-signed-package
+
+  - download: macios
+    displayName: Download WorkloadRollback.json
+    artifact: WorkloadRollback
+
+  - pwsh: |
+      Get-ChildItem -Path "$(Pipeline.Workspace)/macios" -Recurse -Force
+    displayName: 'Display downloads'
+    timeoutInMinutes: 5
+
+  # the default location when downloading is $(Pipeline.Workspace)/<pipeline resource identifier>/<artifact name>
+  - pwsh: |
+      $source="$(Pipeline.Workspace)/macios"
+      $destination="$(Build.SourcesDirectory)/artifacts"
+      # move all the files from the source to the destination
+      Move-Item -Path "$source" -Destination "$destination" -Force
+    displayName: Move artifacts to the expected location
+
+- ${{ else }}:
+  - task: DownloadPipelineArtifact@2
+    displayName: Download artifacts
+    inputs:
+      allowFailedBuilds: true
+      path: $(Build.SourcesDirectory)/artifacts
 
 - pwsh: |
     Get-ChildItem $(Build.SourcesDirectory)/artifacts -Recurse 
@@ -48,8 +87,8 @@ steps:
 
 - pwsh: |
     try {
-      Write-Host "Looking in '$(Build.SourcesDirectory)\artifacts"
-      Get-ChildItem "$(Build.SourcesDirectory)\artifacts" -Recurse
+      Write-Host "Looking in '$(Build.SourcesDirectory)\\artifacts"
+      Get-ChildItem "$(Build.SourcesDirectory)\\artifacts" -Recurse
     } catch {
       Write-Host "Exception occured: $_"
     }
@@ -92,7 +131,23 @@ steps:
   displayName: 'Show Environment'
 
 - pwsh: |
+    Import-Module $Env:SYSTEM_DEFAULTWORKINGDIRECTORY\\xamarin-macios\\tools\\devops\\automation\\scripts\\MaciosCI.psd1
     ssh -v -i "$(ID_RSA_PATH)" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no builder@$Env:MAC_AGENT_IP pwd
+    Invoke-SshDownload `
+      -RemoteHost "$Env:MAC_AGENT_IP" `
+      -RemoteUserName "$Env:MAC_AGENT_USER" `
+      -Source "/Users/$Env:MAC_AGENT_USER/remote_build_testing/BuildId.txt" `
+      -Target "BuildId.txt"
+
+    $macBuildId = (Get-Content -Path BuildId.txt).Trim()
+    Remove-Item -Path BuildId.txt # clean up after ourselves
+    if ([string]::IsNullOrEmpty($macBuildId)) {
+      throw "The mac we're trying to connect to ($($Env:MAC_AGENT_IP)) is not reserved for us anymore. If you're reran this job, please rerun all jobs instead."
+    }
+    $windowsBuildId = $Env:BUILD_BUILDID
+    if ($macBuildId -ne $windowsBuildId) {
+      throw "The mac we're trying to connect to ($($Env:MAC_AGENT_IP)) is reserved for a different build (with build id $($macBuildId)). If you're reran this job, please rerun all jobs instead."
+    }
   displayName: "Verify ssh connection"
 
 # This task fixes errors such as these:
@@ -130,7 +185,7 @@ steps:
   displayName: 'Install custom .NET'
 
 - pwsh: |
-    $Env:DOTNET = "$(Build.SourcesDirectory)\xamarin-macios\tests\dotnet\Windows\bin\dotnet\dotnet.exe"
+    $Env:DOTNET = "$(Build.SourcesDirectory)\xamarin-macios\\tests\dotnet\Windows\\bin\dotnet\dotnet.exe"
     & dotnet build "$(Build.SourcesDirectory)/xamarin-macios/tests/dotnet/Windows/InstallDotNet.csproj" `
       --verbosity quiet `
       "-bl:$(Build.SourcesDirectory)/xamarin-macios/tests/dotnet/Windows/install-workloads.binlog" `
@@ -192,10 +247,14 @@ steps:
         "-bl:$(Build.SourcesDirectory)/xamarin-macios/tests/dotnet/Windows/run-dotnet-tests.binlog"
   displayName: 'Run .NET tests'
   timeoutInMinutes: 30
+  ${{ if not(parameters.isPR) }}:
+    retryCountOnTaskFailure: ${{ parameters.retryCount }}
 
 - pwsh: $(Build.SourcesDirectory)\xamarin-macios\tools\devops\automation\scripts\run-remote-windows-tests.ps1
   displayName: 'Run .NET tests remotely'
   timeoutInMinutes: 120
+  ${{ if not(parameters.isPR) }}:
+    retryCountOnTaskFailure: ${{ parameters.retryCount }}
   env:
     XMA_PASSWORD: $(XMA.Password)
 
@@ -273,7 +332,7 @@ steps:
   displayName: 'Publish Artifact: Windows binlogs'
   inputs:
     targetPath: $(Build.ArtifactStagingDirectory)/windows-binlogs
-    artifactName: windows-binlogs-test-$(Build.BuildId)-$(System.JobAttempt)
+    artifactName: windows-binlogs-test-$(Build.BuildId)-$(System.StageAttempt)-$(System.StageAttempt)-$(System.JobAttempt)
   continueOnError: true
   condition: succeededOrFailed()
 
@@ -281,17 +340,13 @@ steps:
 - pwsh: |
     Import-Module $Env:SYSTEM_DEFAULTWORKINGDIRECTORY\xamarin-macios\tools\devops\automation\scripts\MaciosCI.psd1
     $githubComments = New-GitHubCommentsObjectFromUrl -Url "$(Build.Repository.Uri)" -Token $(GitHub.Token) -Hash $Env:COMMENT_HASH
-    $statuses = New-GitHubStatusesObjectFromUrl -Url "$(Build.Repository.Uri)" -Token $(GitHub.Token)
 
     if (Test-Path -Path "$Env:GITHUB_FAILURE_COMMENT_FILE" -PathType Leaf)  {
-      $statuses.SetStatus("error", "${{ parameters.statusContext }} failed.", "${{ parameters.statusContext }}")
       $githubComments.NewCommentFromFile("${{ parameters.statusContext }} failed", ":x:", "$Env:GITHUB_FAILURE_COMMENT_FILE")
     } elseif ("$($Env:AGENT_JOBSTATUS)" -ne "Succeeded") {
-      $statuses.SetStatus("error", "${{ parameters.statusContext }} failed.", "${{ parameters.statusContext }}")
       $message = ":x: $($Env:AGENT_JOBSTATUS) :x:"
       $githubComments.NewCommentFromMessage("${{ parameters.statusContext }} failed", ":x:", $message)
     } else {
-      $statuses.SetStatus("success", "${{ parameters.statusContext }} passed.", "${{ parameters.statusContext }}")
       $message = ":white_check_mark: **All** ${{ parameters.statusContext }} passed."
       $githubComments.NewCommentFromMessage("${{ parameters.statusContext }} passed", ":computer:", $message)
     }
@@ -308,17 +363,6 @@ steps:
       COMMENT_HASH: $(fix_commit.GIT_HASH)
     ${{ else }}:
       COMMENT_HASH: $(Build.SourceVersion)
-
-- pwsh: |
-    Import-Module $Env:SYSTEM_DEFAULTWORKINGDIRECTORY\xamarin-macios\tools\devops\automation\scripts\MaciosCI.psd1
-    $vsts = New-VSTS -Org "devdiv" -Project "DevDiv" -Token $(MacPoolAccessToken)
-
-    # get the pool and the agent objects and disable the bot
-    $pool = $vsts.Pools.GetPool("$Env:MAC_AGENT_POOL")
-    $agent = $vsts.Agents.GetAgent($pool, $Env:MAC_AGENT_NAME)
-    $vsts.Agents.SetEnabled($pool, $agent, $True)
-  displayName: 'Re-enabled macOS bot from pool'
-  condition: always()
 
 - pwsh: |
     Remove-Item "$(ID_RSA_PATH)"

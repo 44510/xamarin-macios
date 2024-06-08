@@ -9,7 +9,6 @@ using Microsoft.Build.Utilities;
 
 using NUnit.Framework;
 
-using Xamarin.iOS.Tasks;
 using Xamarin.Utils;
 
 namespace Xamarin.MacDev.Tasks {
@@ -122,6 +121,7 @@ namespace Xamarin.MacDev.Tasks {
 		<IsCxx></IsCxx>
 		<Kind></Kind>
 		<LinkerFlags></LinkerFlags>
+		<LinkWithSwiftSystemLibraries></LinkWithSwiftSystemLibraries>
 		<NeedsGccExceptionHandling></NeedsGccExceptionHandling>
 		<SmartLink></SmartLink>
 		<WeakFrameworks></WeakFrameworks>
@@ -132,6 +132,7 @@ namespace Xamarin.MacDev.Tasks {
 		<IsCxx></IsCxx>
 		<Kind></Kind>
 		<LinkerFlags></LinkerFlags>
+		<LinkWithSwiftSystemLibraries></LinkWithSwiftSystemLibraries>
 		<NeedsGccExceptionHandling></NeedsGccExceptionHandling>
 		<SmartLink></SmartLink>
 		<WeakFrameworks></WeakFrameworks>
@@ -142,6 +143,7 @@ namespace Xamarin.MacDev.Tasks {
 		<IsCxx></IsCxx>
 		<Kind></Kind>
 		<LinkerFlags></LinkerFlags>
+		<LinkWithSwiftSystemLibraries></LinkWithSwiftSystemLibraries>
 		<NeedsGccExceptionHandling></NeedsGccExceptionHandling>
 		<SmartLink></SmartLink>
 		<WeakFrameworks></WeakFrameworks>
