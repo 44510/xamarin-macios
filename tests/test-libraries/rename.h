@@ -11,6 +11,7 @@
 	#define UltimateMachine   object_UltimateMachine
 	#define FrameworkTest     object_FrameworkTest
 	#define RefOutParameters  object_RefOutParameters
+	#define TypeProvidingProtocolConstructors objecct_TypeProvidingProtocolConstructors
 	#define Sc                object_Sc
 	#define Scc               object_Scc
 	#define Sccc              object_Sccc
@@ -72,6 +73,7 @@
 	#define x_SCNMatrix4MakeTranslation object_x_SCNMatrix4MakeTranslation
 	#define x_SCNMatrix4MakeScale       object_x_SCNMatrix4MakeScale
 	#define x_SCNMatrix4Translate       object_x_SCNMatrix4Translate
+	#define x_GlobalString				object_x_GlobalString
 #elif PREFIX == 2
 	#define theUltimateAnswer ar_theUltimateAnswer
 	#define useZLib           ar_useZLib
@@ -84,6 +86,7 @@
 	#define UltimateMachine   ar_UltimateMachine
 	#define FrameworkTest     ar_FrameworkTest
 	#define RefOutParameters  ar_RefOutParameters
+	#define TypeProvidingProtocolConstructors ar_TypeProvidingProtocolConstructors
 	#define Sc                ar_Sc
 	#define Scc               ar_Scc
 	#define Sccc              ar_Sccc
@@ -145,6 +148,7 @@
 	#define x_SCNMatrix4MakeTranslation ar_x_SCNMatrix4MakeTranslation
 	#define x_SCNMatrix4MakeScale       ar_x_SCNMatrix4MakeScale
 	#define x_SCNMatrix4Translate       ar_x_SCNMatrix4Translate
+	#define x_GlobalString					ar_x_GlobalString
 #else
 // keep original names
 #endif

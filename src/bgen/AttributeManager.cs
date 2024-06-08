@@ -223,6 +223,8 @@ public class AttributeManager {
 		case "WrapAttribute":
 			return typeof (WrapAttribute);
 #if NET
+		case "System.Diagnostics.CodeAnalysis.ExperimentalAttribute":
+			return typeof (System.Diagnostics.CodeAnalysis.ExperimentalAttribute);
 		case "System.Runtime.Versioning.SupportedOSPlatformAttribute":
 			return typeof (System.Runtime.Versioning.SupportedOSPlatformAttribute);
 		case "System.Runtime.Versioning.UnsupportedOSPlatformAttribute":
@@ -335,6 +337,9 @@ public class AttributeManager {
 		case "AvailabilityAttribute":
 			return AttributeConversionManager.ConvertAvailability (attribute);
 #if NET
+		case "ExperimentalAttribute":
+			var earg = attribute.ConstructorArguments [0].Value as string;
+			return new System.Diagnostics.CodeAnalysis.ExperimentalAttribute (earg).Yield ();
 		case "SupportedOSPlatformAttribute":
 			var sarg = attribute.ConstructorArguments [0].Value as string;
 			(var sp, var sv) = ParseOSPlatformAttribute (sarg);
@@ -625,4 +630,16 @@ public class AttributeManager {
 		return false;
 	}
 
+	public bool IsStatic (ICustomAttributeProvider provider)
+	{
+		if (HasAttribute<StaticAttribute> (provider))
+			return true;
+		var method = provider as MethodInfo;
+		if (method is not null) {
+			var property = Generator.GetProperyFromGetSetMethod (method);
+			if (property is not null && HasAttribute<StaticAttribute> (property))
+				return true;
+		}
+		return false;
+	}
 }
