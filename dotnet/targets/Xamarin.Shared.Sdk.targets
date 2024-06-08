@@ -13,7 +13,7 @@
 	<UsingTask TaskName="Xamarin.MacDev.Tasks.InstallNameTool" AssemblyFile="$(_XamarinTaskAssembly)" />
 	<UsingTask TaskName="Xamarin.MacDev.Tasks.LinkNativeCode" AssemblyFile="$(_XamarinTaskAssembly)" />
 	<UsingTask TaskName="Xamarin.MacDev.Tasks.MergeAppBundles" AssemblyFile="$(_XamarinTaskAssembly)" />
-	<UsingTask TaskName="Xamarin.MacDev.Tasks.ILStrip" AssemblyFile="$(_XamarinTaskAssembly)" />
+	<UsingTask TaskName="Xamarin.MacDev.Tasks.MobileILStrip" AssemblyFile="$(_XamarinTaskAssembly)" />
 
 	<!-- Project types and how do we distinguish between them
 
@@ -135,6 +135,8 @@
 		<UseSystemResourceKeys Condition="'$(UseSystemResourceKeys)' == '' And '$(_BundlerDebug)' == 'true'">false</UseSystemResourceKeys>
 		<UseNativeHttpHandler Condition="'$(_PlatformName)' != 'macOS' And '$(UseNativeHttpHandler)' == ''">true</UseNativeHttpHandler>
 		<!-- AutoreleasePoolSupport needs to be set earlier, so that illink doesn't override it - https://github.com/dotnet/runtime/pull/86753 - so it's set in Xamarin.Shared.Sdk.props -->
+		<EnableCppCLIHostActivation Condition="'$(EnableCppCLIHostActivation)' == ''">false</EnableCppCLIHostActivation>
+		<_EnableConsumingManagedCodeFromNativeHosting Condition="'$(_EnableConsumingManagedCodeFromNativeHosting)' == ''">false</_EnableConsumingManagedCodeFromNativeHosting>
 		<NullabilityInfoContextSupport Condition="'$(NullabilityInfoContextSupport)' == ''">false</NullabilityInfoContextSupport>
 		<BuiltInComInteropSupport Condition="'$(BuiltInComInteropSupport)' == ''">false</BuiltInComInteropSupport>
 		<!-- Verify DI trimmability at development-time, but turn the validation off for production/trimmed builds. -->
@@ -154,6 +156,11 @@
 		<_OriginalAggressiveAttributeTrimming>$(_AggressiveAttributeTrimming)</_OriginalAggressiveAttributeTrimming>
 		<_AggressiveAttributeTrimming Condition="'$(_UseNativeAot)' == 'true'">false</_AggressiveAttributeTrimming>
 		<_AggressiveAttributeTrimming Condition="'$(_AggressiveAttributeTrimming)' == ''">true</_AggressiveAttributeTrimming>
+
+		<!-- This property is also defined in Xamarin.Shared.props, but that file is imported too late for us to use the definition, and we can't remove it from Xamarin.Shared.props quite yet, because that would break legacy
+			 (in other words: once we drop support for legacy Xamarin, we can remove the other definition) -->
+		<_CanOutputAppBundle Condition="'$(_CanOutputAppBundle)' == '' And ('$(OutputType)' == 'Exe' Or '$(IsAppExtension)' == 'true' Or '$(IsWatchApp)' == 'true')">true</_CanOutputAppBundle>
+		<_CanOutputAppBundle Condition="'$(_CanOutputAppBundle)' == ''">false</_CanOutputAppBundle>
 	</PropertyGroup>
 
 	<PropertyGroup>
@@ -179,7 +186,15 @@
 	</PropertyGroup>
 
 	<!-- Inject our custom logic into *DependsOn variables -->
-	<PropertyGroup>
+	<PropertyGroup Condition="'$(_CanOutputAppBundle)' != 'true'">
+		<BuildDependsOn>
+			BuildOnlySettings;
+			_CollectBundleResources;
+			_PackLibraryResources;
+			$(BuildDependsOn);
+		</BuildDependsOn>
+	</PropertyGroup>
+	<PropertyGroup Condition="'$(_CanOutputAppBundle)' == 'true'">
 		<!-- single-rid build -->
 		<BuildDependsOn Condition="'$(RuntimeIdentifiers)' == '' And '$(_IsMultiRidBuild)' != 'true'">
 			_WarnRuntimeIdentifiersClash;
@@ -314,7 +329,18 @@
 		</ItemGroup>
 	</Target>
 
-	<Target Name="_RunRidSpecificBuild" Condition="'$(RuntimeIdentifiers)' != '' And '$(RuntimeIdentifier)' == ''" DependsOnTargets="_DetectSdkLocations;_GenerateBundleName">
+	<PropertyGroup>
+		<!-- The dependencies on BuildOnlySettings and ResolveReferences are so that we build any project references before running the RID-specific builds -->
+		<_RunRidSpecificBuildDependsOn>
+			$(_RunRidSpecificBuildDependsOn);
+			BuildOnlySettings;
+			ResolveReferences;
+			_DetectSdkLocations;
+			_GenerateBundleName;
+		</_RunRidSpecificBuildDependsOn>
+	</PropertyGroup>
+
+	<Target Name="_RunRidSpecificBuild" Condition="'$(RuntimeIdentifiers)' != '' And '$(RuntimeIdentifier)' == ''" DependsOnTargets="$(_RunRidSpecificBuildDependsOn)">
 		<ItemGroup>
 			<!-- Convert RuntimeIdentifiers (a property) to an item group -->
 			<_RuntimeIdentifiersAsItems Include="$(RuntimeIdentifiers)" Condition=" '$(RuntimeIdentifiers)' != '' " />
@@ -342,7 +368,9 @@
 		<Error Condition="@(_RuntimeIdentifierDistinctPlatforms->Count()) > 1" Text="Building for all the runtime identifiers '$(RuntimeIdentifiers)' at the same time isn't possible, because they represent different platform variations." />
 
 		<PropertyGroup>
+			<!-- We disable building project references (BuildProjectReferences=false), because project references aren't RID-specific, so we build them (once) before running _RunRidSpecificBuild target, so that we don't have to build them once per RID -->
 			<_RidSpecificProperties>
+				BuildProjectReferences=false;
 				_IsMultiRidBuild=true;
 				RuntimeIdentifiers=;
 				_ProcessedBundleResourcesPath=$(_ProcessedBundleResourcesPath);
@@ -573,6 +601,8 @@
 				PlatformAssembly=$(_PlatformAssemblyName).dll
 				RelativeAppBundlePath=$(_RelativeAppBundlePath)
 				Registrar=$(Registrar)
+				@(ReferenceNativeSymbol -> 'ReferenceNativeSymbol=%(SymbolType):%(SymbolMode):%(Identity)')
+				RequireLinkWithAttributeForObjectiveCClassSearch=$(RequireLinkWithAttributeForObjectiveCClassSearch)
 				RequirePInvokeWrappers=$(_RequirePInvokeWrappers)
 				RuntimeConfigurationFile=$(_RuntimeConfigurationFile)
 				SdkDevPath=$(_SdkDevPath)
@@ -656,6 +686,7 @@
 			<!-- This would not be needed if LinkContext.GetAssemblies () was exposed to us. -->
 			<_TrimmerCustomSteps Include="$(_AdditionalTaskAssembly)" BeforeStep="MarkStep" Type="Xamarin.Linker.CollectAssembliesStep" />
 			<_TrimmerCustomSteps Include="$(_AdditionalTaskAssembly)" BeforeStep="MarkStep" Type="MonoTouch.Tuner.CoreTypeMapStep" />
+			<_TrimmerCustomSteps Include="$(_AdditionalTaskAssembly)" BeforeStep="MarkStep" Type="MonoTouch.Tuner.ProcessExportedFields" />
 			<!-- The final decision to remove/keep the dynamic registrar must be done before the linking step -->
 			<_TrimmerCustomSteps Include="$(_AdditionalTaskAssembly)" BeforeStep="MarkStep" Type="MonoTouch.Tuner.RegistrarRemovalTrackingStep" />
 			<!-- TODO: these steps should probably run after mark. -->
@@ -876,13 +907,13 @@
 				<OutputPath>$([System.String]::Copy('%(OutputPath)').Replace('\', '/'))</OutputPath>
 			</_AssembliesToBeStripped>
 		</ItemGroup>
-		<Xamarin.MacDev.Tasks.ILStrip
+		<MobileILStrip
 			Assemblies="@(_AssembliesToBeStripped)"
 			SessionId="$(BuildSessionId)"
 			Condition="'$(IsMacEnabled)' == 'true'"
 			>
 			<Output TaskParameter="StrippedAssemblies" ItemName="_StrippedAssemblies" />
-		</Xamarin.MacDev.Tasks.ILStrip>
+		</MobileILStrip>
 		<ItemGroup>
 			<ResolvedFileToPublish Remove="@(_AssembliesToBeStripped)" />
 			<ResolvedFileToPublish Include="@(_StrippedAssemblies)" />
@@ -927,9 +958,9 @@
 		<ReadItemsFromFile SessionId="$(BuildSessionId)" File="$(_LinkerItemsDirectory)/_ReferencesFile.items" Condition="Exists('$(_LinkerItemsDirectory)/_ReferencesFile.items')">
 			<Output TaskParameter="Items" ItemName="_ReferencesFile" />
 		</ReadItemsFromFile>
-		<!-- Load _ReferencesLinkerFlags -->
-		<ReadItemsFromFile SessionId="$(BuildSessionId)" File="$(_LinkerItemsDirectory)/_ReferencesLinkerFlags.items" Condition="Exists('$(_LinkerItemsDirectory)/_ReferencesLinkerFlags.items')">
-			<Output TaskParameter="Items" ItemName="_ReferencesLinkerFlags" />
+		<!-- Load ReferenceNativeSymbol -->
+		<ReadItemsFromFile SessionId="$(BuildSessionId)" File="$(_LinkerItemsDirectory)/ReferenceNativeSymbol.items" Condition="Exists('$(_LinkerItemsDirectory)/ReferenceNativeSymbol.items')">
+			<Output TaskParameter="Items" ItemName="_ProcessedReferenceNativeSymbol" />
 		</ReadItemsFromFile>
 		<!-- Load _AssembliesToAOT -->
 		<ReadItemsFromFile SessionId="$(BuildSessionId)" File="$(_LinkerItemsDirectory)/_AssembliesToAOT.items" Condition="Exists('$(_LinkerItemsDirectory)/_AssembliesToAOT.items')">
@@ -957,7 +988,7 @@
 			<_PackageIdInfix Condition="'$(_XamarinRuntime)' == 'NativeAOT'">NativeAOT.</_PackageIdInfix>
 
 			<_MonoNugetPackageId>Microsoft.NETCore.App.Runtime.$(_PackageIdInfix)$(RuntimeIdentifier)</_MonoNugetPackageId>
-			<_XamarinNugetPackageId>Microsoft.$(_PlatformName).Runtime.$(RuntimeIdentifier)</_XamarinNugetPackageId>
+			<_XamarinNugetPackageId>Microsoft.$(_PlatformName).Runtime.$(RuntimeIdentifier).$(_XamarinPackSuffix)</_XamarinNugetPackageId>
 		</PropertyGroup>
 		<ItemGroup>
 			<!-- Look in the ResolvedFrameworkReference for our Microsoft.* package. This should only find a single package. -->
@@ -1232,6 +1263,7 @@
 			Assemblies="@(_AssembliesToAOT)"
 			AOTCompilerPath="$(_XamarinAOTCompiler)"
 			InputDirectory="$(_AOTInputDirectory)"
+			MaxDegreeOfParallelism="$(AotCompileMaxDegreeOfParallelism)"
 			MinimumOSVersion="$(_MinimumOSVersion)"
 			OutputDirectory="$(_AOTOutputDirectory)\%(_AssembliesToAOT.Arch)"
 			SdkDevPath="$(_SdkDevPath)"
@@ -1443,8 +1475,31 @@
 			_CompileNativeExecutable;
 			_ReidentifyDynamicLibraries;
 			_ComputeLinkNativeExecutableInputs;
+			_AddSwiftLinkerFlags;
 		</_LinkNativeExecutableDependsOn>
 	</PropertyGroup>
+
+	<Target Name="_AddSwiftLinkerFlags" DependsOnTargets="_DetectSdkLocations">
+		<PropertyGroup>
+			<_SwiftTargetPlatform Condition="'$(_PlatformName)' == 'iOS' And '$(_SdkIsSimulator)' == 'true'">iphonesimulator</_SwiftTargetPlatform>
+			<_SwiftTargetPlatform Condition="'$(_PlatformName)' == 'iOS' And '$(_SdkIsSimulator)' != 'true'">iphoneos</_SwiftTargetPlatform>
+			<_SwiftTargetPlatform Condition="'$(_PlatformName)' == 'tvOS' And '$(_SdkIsSimulator)' == 'true'">appletvsimulator</_SwiftTargetPlatform>
+			<_SwiftTargetPlatform Condition="'$(_PlatformName)' == 'tvOS' And '$(_SdkIsSimulator)' != 'true'">appletvos</_SwiftTargetPlatform>
+			<_SwiftTargetPlatform Condition="'$(_PlatformName)' == 'MacCatalyst'">macosx</_SwiftTargetPlatform> <!-- yes, 'macosx' and not 'maccatalyst': even though the resulting maccatalyst directory exists, it doesn't have anything useful in it -->
+			<_SwiftTargetPlatform Condition="'$(_PlatformName)' == 'macOS'">macosx</_SwiftTargetPlatform>
+
+			<_HasBindingLibraryWithSwift Condition="@(_BindingLibraryLinkWith->WithMetadataValue('LinkWithSwiftSystemLibraries', 'true')->Count()) &gt; 0">true</_HasBindingLibraryWithSwift>
+			<_HasFrameworkNativeReferenceWithSwift Condition="@(_FrameworkNativeReference->WithMetadataValue('LinkWithSwiftSystemLibraries', 'true')->Count()) &gt; 0">true</_HasFrameworkNativeReferenceWithSwift>
+			<_HasFileNativeReferenceWithSwift Condition="@(_FileNativeReference->WithMetadataValue('LinkWithSwiftSystemLibraries', 'true')->Count()) &gt; 0">true</_HasFileNativeReferenceWithSwift>
+
+			<!-- Automatically link with Swift system libraries if any of the native libraries we link with has LinkWithSwiftSystemLibraries=true -->
+			<LinkWithSwiftSystemLibraries Condition="'$(LinkWithSwiftSystemLibraries)' == '' And ('$(_HasBindingLibraryWithSwift)' == 'true' Or '$(_HasFrameworkNativeReferenceWithSwift)' == 'true' Or '$(_HasFileNativeReferenceWithSwift)' == 'true')">true</LinkWithSwiftSystemLibraries>
+		</PropertyGroup>
+		<ItemGroup Condition="'$(LinkWithSwiftSystemLibraries)' == 'true'">
+			<_MainLinkerFlags Include="-L$(_SdkDevPath)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(_SwiftTargetPlatform)/" />
+			<_MainLinkerFlags Include="-L$(_SdkRoot)/usr/lib/swift/" />
+		</ItemGroup>
+	</Target>
 
 	<Target Name="_ComputeLinkNativeExecutableInputs" Condition="'$(IsMacEnabled)' == 'true'">
 		<PropertyGroup>
@@ -1461,6 +1516,9 @@
 
 			<!-- CFNetwork is required by xamarin_start_wwan -->
 			<_NativeExecutableFrameworks Include="CFNetwork" Condition="'$(_PlatformName)' == 'iOS'" />
+
+			<!-- libSystem.Security.Cryptography.Native.Apple.a requires the Security framework -->
+			<_NativeExecutableFrameworks Include="Security" />
 
 			<!-- Mono requires zlib, iconv, and the "Compression framework" -->
 			<_MainLinkerFlags Include="-lz" />
@@ -1559,12 +1617,11 @@
 			<_NativeReferences Include="@(_FileNativeReference)" Condition="'%(_FileNativeReference.LinkToExecutable)' != 'false'" />
 		</ItemGroup>
 
-		<!-- remove the `-u` prefix from `_ReferencesLinkerFlags` so we can give the output file to `strip` -->
-		<WriteLinesToFile SessionId="$(BuildSessionId)" File="$(_MtouchSymbolsList)" Lines="@(_ReferencesLinkerFlags->'%(Identity)'->Substring (2))" Overwrite="true" />
+		<WriteLinesToFile SessionId="$(BuildSessionId)" File="$(_MtouchSymbolsList)" Lines="@(_ProcessedReferenceNativeSymbol)" Overwrite="true" />
 
 		<ItemGroup>
 			<_AllLinkerFlags Include="@(_AssemblyLinkerFlags);@(_MainLinkerFlags);@(_CustomLinkFlags)" />
-			<_AllLinkerFlags Condition="'$(_ExportSymbolsExplicitly)' != 'true'" Include="@(_ReferencesLinkerFlags)" />
+			<_AllLinkerFlags Condition="'$(_ExportSymbolsExplicitly)' != 'true'" Include="@(_ProcessedReferenceNativeSymbol->'-u%(Identity)')" />
 
 			<!-- check if needs to be removed: https://github.com/xamarin/xamarin-macios/issues/18693 -->
 			<_AllLinkerFlags Condition="$([MSBuild]::VersionGreaterThanOrEquals('$(_XcodeVersion)', '15.0')) And '$(_UseClassicLinker)' != 'false'" Include="-Xlinker" />
@@ -1617,29 +1674,6 @@
 			<Output TaskParameter="Lines" ItemName="_UserFrameworksWithoutDebugSymbols" />
 		</ReadItemsFromFile>
 	</Target>
-
-	<Target Name="_ComputeDefaultLinkMode" DependsOnTargets="_DetectSdkLocations">
-		<PropertyGroup Condition="'$(TrimMode)' != ''">
-			<!-- If TrimMode is set, then that's the default link mode -->
-			<_DefaultLinkMode>TrimMode</_DefaultLinkMode>
-		</PropertyGroup>
-		<PropertyGroup Condition="'$(TrimMode)' == ''">
-			<!-- Linking is always on for all assemblies when using NativeAOT - this is because we need to modify all assemblies in the linker for them to be compatible with NativeAOT -->
-			<_DefaultLinkMode Condition="'$(_UseNativeAot)' == 'true'">Full</_DefaultLinkMode>
-
-			<_DefaultLinkMode Condition="'$(_UseNativeAot)' != 'true' And '$(_PlatformName)' == 'macOS'">None</_DefaultLinkMode> <!-- Linking is off by default for macOS apps -->
-			<_DefaultLinkMode Condition="'$(_UseNativeAot)' != 'true' And '$(_PlatformName)' == 'MacCatalyst' And '$(Configuration)' == 'Release'">SdkOnly</_DefaultLinkMode> <!-- Default linking is on for release builds for Mac Catalyst apps -->
-			<_DefaultLinkMode Condition="'$(_UseNativeAot)' != 'true' And '$(_PlatformName)' == 'MacCatalyst' And '$(Configuration)' != 'Release'">None</_DefaultLinkMode> <!-- Default linking is off for non-release builds for Mac Catalyst apps -->
-			<_DefaultLinkMode Condition="'$(_UseNativeAot)' != 'true' And '$(_PlatformName)' != 'macOS' And '$(_PlatformName)' != 'MacCatalyst' And '$(_SdkIsSimulator)' == 'true'">None</_DefaultLinkMode> <!-- Linking is off by default in the simulator -->
-			<_DefaultLinkMode Condition="'$(_UseNativeAot)' != 'true' And '$(_PlatformName)' != 'macOS' And '$(_PlatformName)' != 'MacCatalyst' And '$(_SdkIsSimulator)' != 'true'">SdkOnly</_DefaultLinkMode> <!-- Linking is SdkOnly for iOS/tvOS/watchOS apps on device -->
-		</PropertyGroup>
-	</Target>
-	<PropertyGroup>
-		<_ComputeLinkModeDependsOn>
-			$(_ComputeLinkModeDependsOn);
-			_ComputeDefaultLinkMode;
-		</_ComputeLinkModeDependsOn>
-	</PropertyGroup>
 
 	<PropertyGroup>
 		<_CodesignAppBundleDependsOn Condition="'$(RuntimeIdentifiers)' != ''">
@@ -2049,6 +2083,7 @@
 		<Unzip
 			SessionId="$(BuildSessionId)"
 			Condition="'$(IsMacEnabled)' == 'true' Or '$(IsHotRestartBuild)' == 'true'"
+			CopyToWindows="true"
 			ZipFilePath="%(_CompressedXpcServices.Identity)"
 			ExtractionPath="%(_CompressedXpcServices.ExtractionPath)"
 			>
@@ -2094,6 +2129,12 @@
 			<_IsValidRuntimeIdentifier Condition="@(_XamarinValidRuntimeIdentifier->WithMetadataValue('Platform', '$(_PlatformName)')->WithMetadataValue('Filename', '$(RuntimeIdentifier)')->Count()) &gt; 0">true</_IsValidRuntimeIdentifier>
 		</PropertyGroup>
 		<Error Condition="'$(_IsValidRuntimeIdentifier)' != 'true'" Text="The RuntimeIdentifier '$(RuntimeIdentifier)' is invalid." />
+	</Target>
+
+	<Target Name="_ValidateGarbageCollector"
+		Condition="'$(ServerGarbageCollection)' == 'true'"
+		BeforeTargets="Build;ResolvedFrameworkReference;ResolveRuntimePackAssets">
+		<Error Text=".NET for $(_PlatformName) does not support server garbage collection. Please don't set the 'ServerGarbageCollection' property." />
 	</Target>
 
 	<!-- This target can be removed in .NET 9 (when we stop supporting the compat logic to make the invalid TPV just a warning instead of an error) -->

@@ -44,6 +44,7 @@ using System.Linq;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -65,6 +66,7 @@ public partial class Generator : IMemberGatherer {
 	public AttributeManager AttributeManager { get { return BindingTouch.AttributeManager; } }
 	NamespaceCache NamespaceCache { get { return BindingTouch.NamespaceCache; } }
 	public TypeCache TypeCache { get { return BindingTouch.TypeCache; } }
+	public DocumentationManager DocumentationManager { get { return BindingTouch.DocumentationManager; } }
 
 	Nomenclator nomenclator;
 	Nomenclator Nomenclator {
@@ -302,6 +304,17 @@ public partial class Generator : IMemberGatherer {
 
 		return AttributeManager.HasAttribute<ProtocolAttribute> (protocol);
 	}
+
+#if NET
+	public ExperimentalAttribute GetExperimentalAttribute (ICustomAttributeProvider cu)
+	{
+		ExperimentalAttribute rv;
+		if (cu is not null && (rv = AttributeManager.GetCustomAttribute<ExperimentalAttribute> (cu)) is not null)
+			return rv;
+
+		return null;
+	}
+#endif
 
 	public BindAsAttribute GetBindAsAttribute (ICustomAttributeProvider cu)
 	{
@@ -1422,6 +1435,10 @@ public partial class Generator : IMemberGatherer {
 						continue;
 					else if (attr is NoMethodAttribute)
 						continue;
+#if NET
+					else if (attr is ExperimentalAttribute)
+						continue;
+#endif
 					else {
 						switch (attr.GetType ().Name) {
 						case "PreserveAttribute":
@@ -1554,11 +1571,13 @@ public partial class Generator : IMemberGatherer {
 			var parameters = mi.GetParameters ();
 
 			print ("");
+			PrintExperimentalAttribute (ti.Type);
 			print ("[UnmanagedFunctionPointerAttribute (CallingConvention.Cdecl)]");
 			print ("[UserDelegateType (typeof ({0}))]", ti.UserDelegate);
 			print ("unsafe internal delegate {0} {1} ({2});", ti.ReturnType, ti.DelegateName, ti.Parameters);
 			print ("");
 			print ("//\n// This class bridges native block invocations that call into C#\n//");
+			PrintExperimentalAttribute (ti.Type);
 			print ("static internal class {0} {{", ti.StaticName); indent++;
 			// it can't be conditional without fixing https://github.com/mono/linker/issues/516
 			// but we have a workaround in place because we can't fix old, binary bindings so...
@@ -1639,6 +1658,7 @@ public partial class Generator : IMemberGatherer {
 			// Now generate the class that allows us to invoke a Objective-C block from C#
 			//
 			print ("");
+			PrintExperimentalAttribute (ti.Type);
 			print ($"internal sealed class {ti.NativeInvokerName} : TrampolineBlockBase {{");
 			indent++;
 			print ("{0} invoker;", ti.DelegateName);
@@ -2374,7 +2394,7 @@ public partial class Generator : IMemberGatherer {
 	}
 
 	// This assumes the compiler implements property methods as get_ or set_ prefixes
-	static PropertyInfo GetProperyFromGetSetMethod (MethodInfo method)
+	public static PropertyInfo GetProperyFromGetSetMethod (MethodInfo method)
 	{
 		string name = method.Name;
 		if (name.StartsWith ("get_", StringComparison.Ordinal) || name.StartsWith ("set_", StringComparison.Ordinal)) {
@@ -2523,11 +2543,14 @@ public partial class Generator : IMemberGatherer {
 		}
 	}
 
-	public string SelectorField (string s, bool ignore_inline_directive = false)
+	public string SelectorField (string s, bool ignore_inline_directive = false, bool force_gethandle = false)
 	{
 		string name;
 
 		if (InlineSelectors && !ignore_inline_directive)
+			force_gethandle = true;
+
+		if (force_gethandle)
 			return "Selector.GetHandle (\"" + s + "\")";
 
 		if (selector_names.TryGetValue (s, out name))
@@ -2634,17 +2657,38 @@ public partial class Generator : IMemberGatherer {
 		return AttributeManager.HasAttribute<ProtocolAttribute> (type);
 	}
 
+	public string GetMethodName (MemberInformation minfo, bool is_async)
+	{
+		var mi = minfo.Method;
+		string name;
+		if (minfo.is_ctor) {
+			if (minfo.is_protocol_member) {
+				var bindAttribute = GetBindAttribute (mi);
+				name = bindAttribute?.Selector ?? "CreateInstance";
+			} else {
+				name = Nomenclator.GetGeneratedTypeName (mi.DeclaringType);
+			}
+		} else if (is_async) {
+			name = GetAsyncName (mi);
+		} else {
+			name = mi.Name;
+		}
+		return name;
+	}
+
 	public string MakeSignature (MemberInformation minfo, bool is_async, ParameterInfo [] parameters, string extra = "", bool alreadyPreserved = false)
 	{
 		var mi = minfo.Method;
 		var category_class = minfo.category_extension_type;
 		StringBuilder sb = new StringBuilder ();
-		string name = minfo.is_ctor ? Nomenclator.GetGeneratedTypeName (mi.DeclaringType) : is_async ? GetAsyncName (mi) : mi.Name;
+		string name = GetMethodName (minfo, is_async);
 
 		// Some codepaths already write preservation info
 		PrintAttributes (minfo.mi, preserve: !alreadyPreserved, advice: true, bindAs: true, requiresSuper: true);
 
-		if (!minfo.is_ctor && !is_async) {
+		if (minfo.is_ctor && minfo.is_protocol_member) {
+			sb.Append ("T? ");
+		} else if (!minfo.is_ctor && !is_async) {
 			var prefix = "";
 			if (!BindThirdPartyLibrary) {
 				if (minfo.Method.ReturnType.IsArray) {
@@ -2673,13 +2717,20 @@ public partial class Generator : IMemberGatherer {
 
 			sb.Append (" ");
 		}
-		if (minfo.is_extension_method && minfo.Method.IsSpecialName) {
+		if ((minfo.is_extension_method || minfo.is_protocol_member) && minfo.Method.IsSpecialName) {
 			if (name.StartsWith ("get_", StringComparison.Ordinal))
 				name = "Get" + name.Substring (4);
 			else if (name.StartsWith ("set_", StringComparison.Ordinal))
 				name = "Set" + name.Substring (4);
 		}
 		sb.Append (name);
+
+		if (minfo.is_protocol_member) {
+			if (minfo.is_ctor || minfo.is_static) {
+				sb.Append ("<T>");
+			}
+		}
+
 		sb.Append (" (");
 
 		bool comma = false;
@@ -2698,6 +2749,14 @@ public partial class Generator : IMemberGatherer {
 		MakeSignatureFromParameterInfo (comma, sb, mi, minfo.type, parameters);
 		sb.Append (extra);
 		sb.Append (")");
+
+		if (minfo.is_protocol_member) {
+			if (minfo.is_static || minfo.is_ctor) {
+				sb.Append (" where T: NSObject, ");
+				sb.Append ("I").Append (minfo.Method.DeclaringType.Name);
+			}
+		}
+
 		return sb.ToString ();
 	}
 
@@ -2909,10 +2968,10 @@ public partial class Generator : IMemberGatherer {
 		if (minfo.is_interface_impl || minfo.is_extension_method) {
 			var tmp = InlineSelectors;
 			InlineSelectors = true;
-			selector_field = SelectorField (selector);
+			selector_field = SelectorField (selector, force_gethandle: minfo.is_protocol_member);
 			InlineSelectors = tmp;
 		} else {
-			selector_field = SelectorField (selector);
+			selector_field = SelectorField (selector, force_gethandle: minfo.is_protocol_member);
 		}
 
 		if (ShouldMarshalNativeExceptions (mi))
@@ -2926,6 +2985,12 @@ public partial class Generator : IMemberGatherer {
 				print ("{0} ({5}, {1}{2}, {3}{4});", sig, target_name, handle, selector_field, args, ret_val);
 
 			print ("aligned_assigned = true;");
+		} else if (minfo.is_protocol_member && mi.Name == "Constructor") {
+			const string handleName = "__handle__";
+			print ($"IntPtr {handleName};");
+			print ($"{handleName} = global::{NamespaceCache.Messaging}.IntPtr_objc_msgSend (Class.GetHandle (typeof (T)), Selector.GetHandle (\"alloc\"));");
+			print ($"{handleName} = {sig} ({handleName}, {selector_field}{args});");
+			print ($"{(assign_to_temp ? "ret = " : "return ")} global::ObjCRuntime.Runtime.GetINativeObject<T> ({handleName}, true);");
 		} else {
 			bool returns = mi.ReturnType != TypeCache.System_Void && mi.Name != "Constructor";
 			string cast_a = "", cast_b = "";
@@ -3442,6 +3507,10 @@ public partial class Generator : IMemberGatherer {
 
 		GenerateTypeLowering (mi, null_allowed_override, out var args, out var convs, out var disposes, out var by_ref_processing, out var by_ref_init, propInfo);
 
+		if (minfo.is_protocol_member && minfo.is_static) {
+			print ("var class_ptr = Class.GetHandle (typeof (T));");
+		}
+
 		var argsArray = args.ToString ();
 
 		if (by_ref_init.Length > 0)
@@ -3490,7 +3559,8 @@ public partial class Generator : IMemberGatherer {
 			(IsNativeEnum (mi.ReturnType)) ||
 			(mi.ReturnType == TypeCache.System_Boolean) ||
 			(mi.ReturnType == TypeCache.System_Char) ||
-			(mi.Name != "Constructor" && by_ref_processing.Length > 0 && mi.ReturnType != TypeCache.System_Void);
+			minfo.is_protocol_member && disposes.Length > 0 && mi.Name == "Constructor" ||
+			((mi.Name != "Constructor" || minfo.is_protocol_member) && by_ref_processing.Length > 0 && mi.ReturnType != TypeCache.System_Void);
 
 		if (use_temp_return) {
 			// for properties we (most often) put the attribute on the property itself, not the getter/setter methods
@@ -3510,6 +3580,8 @@ public partial class Generator : IMemberGatherer {
 				print ("byte ret;");
 			} else if (mi.ReturnType == TypeCache.System_Char) {
 				print ("ushort ret;");
+			} else if (minfo.is_ctor && minfo.is_protocol_member) {
+				print ($"T? ret;");
 			} else {
 				var isClassType = mi.ReturnType.IsClass || mi.ReturnType.IsInterface;
 				var nullableReturn = isClassType ? "?" : string.Empty;
@@ -3520,7 +3592,7 @@ public partial class Generator : IMemberGatherer {
 		bool needs_temp = use_temp_return || disposes.Length > 0;
 		if (minfo.is_virtual_method || mi.Name == "Constructor") {
 			//print ("if (this.GetType () == TypeManager.{0}) {{", type.Name);
-			if (external || minfo.is_interface_impl || minfo.is_extension_method) {
+			if (external || minfo.is_interface_impl || minfo.is_extension_method || minfo.is_protocol_member) {
 				GenerateNewStyleInvoke (false, mi, minfo, sel, argsArray, needs_temp, category_type);
 			} else {
 				var may_throw = shouldMarshalNativeExceptions;
@@ -3635,6 +3707,8 @@ public partial class Generator : IMemberGatherer {
 				print ("return ret != 0;");
 			} else if (mi.ReturnType == TypeCache.System_Char) {
 				print ("return (char) ret;");
+			} else if (minfo.is_ctor && minfo.is_protocol_member) {
+				print ("return ret;");
 			} else {
 				// we can't be 100% confident that the ObjC API annotations are correct so we always null check inside generated code
 				print ("return ret!;");
@@ -3841,6 +3915,8 @@ public partial class Generator : IMemberGatherer {
 			}
 		}
 
+		WriteDocumentation (pi);
+
 		if (wrap is not null) {
 			print_generated_code ();
 			PrintPropertyAttributes (pi, minfo.type);
@@ -4014,7 +4090,7 @@ public partial class Generator : IMemberGatherer {
 					print ("Console.WriteLine (\"In {0}\");", pi.GetGetMethod ());
 				if (is_model)
 					print ("\tthrow new ModelNotImplementedException ();");
-				else if (minfo.is_abstract)
+				else if (minfo.is_abstract && !minfo.is_protocol_member)
 					print ("throw new You_Should_Not_Call_base_In_This_Method ();");
 				else {
 					if (minfo.is_autorelease) {
@@ -4123,7 +4199,7 @@ public partial class Generator : IMemberGatherer {
 			return "Task";
 		var ttype = GetAsyncTaskType (minfo);
 		if (minfo.HasNSError && (ttype == "bool"))
-			ttype = "Tuple<bool,NSError>";
+			ttype = minfo.IsNSErrorNullable ? "Tuple<bool,NSError?>" : "Tuple<bool,NSError>";
 		return "Task<" + ttype + ">";
 	}
 
@@ -4215,20 +4291,21 @@ public partial class Generator : IMemberGatherer {
 			ttype = GetAsyncTaskType (minfo);
 			tuple = (minfo.HasNSError && (ttype == "bool"));
 			if (tuple)
-				ttype = "Tuple<bool,NSError>";
+				ttype = minfo.IsNSErrorNullable ? "Tuple<bool,NSError?>" : "Tuple<bool,NSError>";
 		}
 		print ("var tcs = new TaskCompletionSource<{0}> ();", ttype);
 		bool ignoreResult = !is_void &&
 			asyncKind == AsyncMethodKind.Plain &&
 			AttributeManager.GetCustomAttribute<AsyncAttribute> (mi).PostNonResultSnippet is null;
-		print ("{6}{5}{4}{0}({1}{2}({3}) => {{",
+		print ("{6}{5}{4}{0}{7}({1}{2}({3}) => {{",
 			mi.Name,
 			GetInvokeParamList (minfo.AsyncInitialParams, false),
 			minfo.AsyncInitialParams.Length > 0 ? ", " : "",
 			GetInvokeParamList (minfo.AsyncCompletionParams),
 			minfo.is_extension_method || minfo.is_category_extension ? "This." : string.Empty,
 			is_void || ignoreResult ? string.Empty : minfo.GetUniqueParamName ("result") + " = ",
-			is_void || ignoreResult ? string.Empty : (asyncKind == AsyncMethodKind.WithResultOutParameter ? string.Empty : "var ")
+			is_void || ignoreResult ? string.Empty : (asyncKind == AsyncMethodKind.WithResultOutParameter ? string.Empty : "var "),
+			minfo.is_protocol_member && minfo.is_static ? "<T>" : string.Empty
 		);
 
 		indent++;
@@ -4247,7 +4324,7 @@ public partial class Generator : IMemberGatherer {
 		else if (tuple) {
 			var cond_name = minfo.AsyncCompletionParams [0].Name;
 			var var_name = minfo.AsyncCompletionParams.Last ().Name;
-			print ("tcs.SetResult (new Tuple<bool,NSError> ({0}_, {1}_));", cond_name, var_name);
+			print ("tcs.SetResult (new {2} ({0}_, {1}_));", cond_name, var_name, ttype);
 		} else if (minfo.IsSingleArgAsync)
 			print ("tcs.SetResult ({0}_!);", minfo.AsyncCompletionParams [0].Name);
 		else
@@ -4312,9 +4389,10 @@ public partial class Generator : IMemberGatherer {
 	}
 
 
-	void GenerateMethod (Type type, MethodInfo mi, bool is_model, Type category_extension_type, bool is_appearance, bool is_interface_impl = false, bool is_extension_method = false, string selector = null, bool isBaseWrapperProtocolMethod = false)
+	void GenerateMethod (Type type, MethodInfo mi, bool is_model = false, Type category_extension_type = null, bool is_appearance = false, bool is_interface_impl = false, bool is_extension_method = false, string selector = null, bool isBaseWrapperProtocolMethod = false, bool is_protocol_member = false)
 	{
 		var minfo = new MemberInformation (this, this, mi, type, category_extension_type, is_interface_impl, is_extension_method, is_appearance, is_model, selector, isBaseWrapperProtocolMethod);
+		minfo.is_protocol_member = is_protocol_member;
 		GenerateMethod (minfo);
 	}
 
@@ -4341,6 +4419,9 @@ public partial class Generator : IMemberGatherer {
 
 	void PrintExport (MemberInformation minfo)
 	{
+		if (minfo.is_ctor && minfo.is_protocol_member)
+			return;
+
 		if (minfo.is_export)
 			print ("[Export (\"{0}\"{1})]", minfo.selector, minfo.is_variadic ? ", IsVariadic = true" : string.Empty);
 	}
@@ -4392,6 +4473,12 @@ public partial class Generator : IMemberGatherer {
 			}
 		}
 
+		if (minfo.is_extension_method) {
+			WriteDocumentation ((MemberInfo) GetProperty (minfo.Method) ?? minfo.Method);
+		} else {
+			WriteDocumentation (minfo.Method);
+		}
+
 		PrintDelegateProxy (minfo);
 
 		if (AttributeManager.HasAttribute<NoMethodAttribute> (minfo.mi)) {
@@ -4412,7 +4499,16 @@ public partial class Generator : IMemberGatherer {
 
 #if NET
 		var is_abstract = false;
-		var do_not_call_base = minfo.is_abstract || minfo.is_model;
+		bool do_not_call_base;
+		if (minfo.is_ctor && minfo.is_protocol_member) {
+			do_not_call_base = false;
+		} else if (minfo.is_static && minfo.is_protocol_member) {
+			do_not_call_base = false;
+		} else if (minfo.is_abstract || minfo.is_model) {
+			do_not_call_base = true;
+		} else {
+			do_not_call_base = false;
+		}
 #else
 		var is_abstract = minfo.is_abstract;
 		var do_not_call_base = minfo.is_model;
@@ -4426,7 +4522,7 @@ public partial class Generator : IMemberGatherer {
 
 
 		if (!is_abstract) {
-			if (minfo.is_ctor) {
+			if (minfo.is_ctor && !minfo.is_protocol_member) {
 				indent++;
 				print (": {0}", minfo.wrap_method is null ? "base (NSObjectFlag.Empty)" : minfo.wrap_method);
 				indent--;
@@ -4529,8 +4625,11 @@ public partial class Generator : IMemberGatherer {
 				if (shortName.StartsWith ("Func<", StringComparison.Ordinal))
 					continue;
 
+				WriteDocumentation (mi.DeclaringType);
+
 				var del = mi.DeclaringType;
 
+				PrintExperimentalAttribute (mi.DeclaringType);
 				if (AttributeManager.HasAttribute (mi.DeclaringType, "MonoNativeFunctionWrapper"))
 					print ("[MonoNativeFunctionWrapper]\n");
 
@@ -4549,7 +4648,7 @@ public partial class Generator : IMemberGatherer {
 		}
 	}
 
-	IEnumerable<MethodInfo> SelectProtocolMethods (Type type, bool? @static = null, bool? required = null)
+	IEnumerable<MethodInfo> SelectProtocolMethods (Type type, bool? @static = null, bool? required = null, bool selectConstructors = false)
 	{
 		var list = type.GetMethods (BindingFlags.Public | BindingFlags.Instance);
 
@@ -4557,7 +4656,7 @@ public partial class Generator : IMemberGatherer {
 			if (m.IsSpecialName)
 				continue;
 
-			if (m.Name == "Constructor")
+			if ((m.Name == "Constructor") != selectConstructors)
 				continue;
 
 			var attrs = AttributeManager.GetCustomAttributes<Attribute> (m);
@@ -4655,6 +4754,7 @@ public partial class Generator : IMemberGatherer {
 	{
 		var allProtocolMethods = new List<MethodInfo> ();
 		var allProtocolProperties = new List<PropertyInfo> ();
+		var allProtocolConstructors = new List<MethodInfo> ();
 		var ifaces = (IEnumerable<Type>) type.GetInterfaces ().Concat (new Type [] { ReflectionExtensions.GetBaseType (type, this) }).OrderBy (v => v.FullName, StringComparer.Ordinal);
 
 		if (type.Namespace is not null) {
@@ -4666,12 +4766,17 @@ public partial class Generator : IMemberGatherer {
 
 		allProtocolMethods.AddRange (SelectProtocolMethods (type));
 		allProtocolProperties.AddRange (SelectProtocolProperties (type));
+		allProtocolConstructors.AddRange (SelectProtocolMethods (type, selectConstructors: true));
 
 		var requiredInstanceMethods = allProtocolMethods.Where ((v) => IsRequired (v) && !AttributeManager.HasAttribute<StaticAttribute> (v)).ToList ();
 		var optionalInstanceMethods = allProtocolMethods.Where ((v) => !IsRequired (v) && !AttributeManager.HasAttribute<StaticAttribute> (v));
+		var staticMethods = allProtocolMethods.Where ((v) => AttributeManager.HasAttribute<StaticAttribute> (v)).ToList ();
 		var requiredInstanceProperties = allProtocolProperties.Where ((v) => IsRequired (v) && !AttributeManager.HasAttribute<StaticAttribute> (v)).ToList ();
 		var optionalInstanceProperties = allProtocolProperties.Where ((v) => !IsRequired (v) && !AttributeManager.HasAttribute<StaticAttribute> (v));
 		var requiredInstanceAsyncMethods = requiredInstanceMethods.Where (m => AttributeManager.HasAttribute<AsyncAttribute> (m)).ToList ();
+		var staticProperties = allProtocolProperties.Where (v => AttributeManager.HasAttribute<StaticAttribute> (v));
+
+		WriteDocumentation (type);
 
 		PrintAttributes (type, platform: true, preserve: true, advice: true);
 		print ("[Protocol (Name = \"{1}\", WrapperType = typeof ({0}Wrapper){2}{3})]",
@@ -4805,6 +4910,22 @@ public partial class Generator : IMemberGatherer {
 
 		print ("{");
 		indent++;
+
+#if NET
+		foreach (var ctor in allProtocolConstructors) {
+			var minfo = new MemberInformation (this, this, ctor, type, null);
+			minfo.is_protocol_member = true;
+			GenerateMethod (minfo);
+			print ("");
+		}
+
+		foreach (var mi in staticMethods) {
+			var minfo = new MemberInformation (this, this, mi, type, null);
+			minfo.is_protocol_member = true;
+			GenerateMethod (minfo);
+			print ("");
+		}
+#endif
 		foreach (var mi in requiredInstanceMethods) {
 			if (AttributeManager.HasAttribute<StaticAttribute> (mi))
 				continue;
@@ -4812,6 +4933,7 @@ public partial class Generator : IMemberGatherer {
 			var minfo = new MemberInformation (this, this, mi, type, null);
 			var mod = string.Empty;
 
+			WriteDocumentation (mi);
 			PrintMethodAttributes (minfo);
 			print_generated_code ();
 			PrintDelegateProxy (minfo);
@@ -4823,11 +4945,30 @@ public partial class Generator : IMemberGatherer {
 			print ("");
 		}
 
+#if NET
+		// C# does not support type constraint on properties, so create Get* and Set* accessors instead.
+		foreach (var pi in staticProperties) {
+			GetAccessorInfo (pi, out var getter, out var setter, out var generate_getter, out var generate_setter);
+			var attrib = GetExportAttribute (pi);
+			if (generate_getter) {
+				PrintAttributes (pi, preserve: true, advice: true);
+				var ba = GetBindAttribute (getter);
+				GenerateMethod (type, getter, false, null, false, false, false, ba?.Selector ?? attrib.ToGetter (pi).Selector, is_protocol_member: true);
+			}
+			if (generate_setter) {
+				PrintAttributes (pi, preserve: true, advice: true);
+				var ba = GetBindAttribute (setter);
+				GenerateMethod (type, setter, false, null, false, false, false, ba?.Selector ?? attrib.ToSetter (pi).Selector, is_protocol_member: true);
+			}
+		}
+#endif
+
 		foreach (var pi in requiredInstanceProperties) {
 			var minfo = new MemberInformation (this, this, pi, type);
 			var mod = string.Empty;
 			minfo.is_export = true;
 
+			WriteDocumentation (pi);
 			print ("[Preserve (Conditional = true)]");
 			PrintAttributes (pi, platform: true);
 
@@ -4873,6 +5014,12 @@ public partial class Generator : IMemberGatherer {
 		include_extensions = optionalInstanceMethods.Any () || optionalInstanceProperties.Any () || requiredInstanceAsyncMethods.Any ();
 		if (include_extensions) {
 			// extension methods
+			if (BindingTouch.SupportsXmlDocumentation) {
+				print ($"/// <summary>Extension methods to the <see cref=\"I{TypeName}\" /> interface to support all the methods from the {protocol_name} protocol.</summary>");
+				print ($"/// <remarks>");
+				print ($"///   <para>The extension methods for <see cref=\"I{TypeName}\" /> interface allow developers to treat instances of the interface as having all the optional methods of the original {protocol_name} protocol. Since the interface only contains the required members, these extension methods allow developers to call the optional members of the protocol.</para>");
+				print ($"/// </remarks>");
+			}
 			PrintAttributes (type, preserve: true, advice: true);
 			print ("{1} unsafe static partial class {0}_Extensions {{", TypeName, class_visibility);
 			indent++;
@@ -4916,9 +5063,11 @@ public partial class Generator : IMemberGatherer {
 		}
 
 		PrintPreserveAttribute (type);
+		PrintExperimentalAttribute (type);
 		print ("internal unsafe sealed class {0}Wrapper : BaseWrapper, I{0} {{", TypeName);
 		indent++;
 		// ctor (IntPtr, bool)
+		PrintExperimentalAttribute (type);
 		print ("[Preserve (Conditional = true)]");
 		print ("public {0}Wrapper ({1} handle, bool owns)", TypeName, NativeHandleType);
 		print ("\t: base (handle, owns)");
@@ -5187,7 +5336,10 @@ public partial class Generator : IMemberGatherer {
 			print (attribstr);
 	}
 
-	public void PrintAttributes (ICustomAttributeProvider mi, bool platform = false, bool preserve = false, bool advice = false, bool notImplemented = false, bool bindAs = false, bool requiresSuper = false, Type inlinedType = null)
+	// Not adding the experimental attribute is bad (it would mean that an API
+	// we meant to be experimental ended up being released as stable), so it's
+	// opt-out instead of opt-in.
+	public void PrintAttributes (ICustomAttributeProvider mi, bool platform = false, bool preserve = false, bool advice = false, bool notImplemented = false, bool bindAs = false, bool requiresSuper = false, Type inlinedType = null, bool experimental = true)
 	{
 		if (platform)
 			PrintPlatformAttributes (mi as MemberInfo, inlinedType);
@@ -5201,15 +5353,32 @@ public partial class Generator : IMemberGatherer {
 			PrintBindAsAttribute (mi);
 		if (requiresSuper)
 			PrintRequiresSuperAttribute (mi);
+		if (experimental)
+			PrintExperimentalAttribute (mi);
 	}
 
-	public void ComputeLibraryName (FieldAttribute fieldAttr, Type type, string propertyName, out string library_name, out string library_path)
+	public void PrintExperimentalAttribute (ICustomAttributeProvider mi)
+	{
+#if NET
+		var e = GetExperimentalAttribute (mi);
+		if (e is null)
+			return;
+		print ($"[Experimental (\"{e.DiagnosticId}\")]");
+#endif
+	}
+
+	void WriteDocumentation (MemberInfo info)
+	{
+		DocumentationManager.WriteDocumentation (sw, indent, info);
+	}
+
+	public bool TryComputeLibraryName (string attributeLibraryName, Type type, out string library_name, out string library_path)
 	{
 		library_path = null;
 
-		if (fieldAttr is not null && fieldAttr.LibraryName is not null) {
+		if (attributeLibraryName is not null) {
 			// Remapped
-			library_name = fieldAttr.LibraryName;
+			library_name = attributeLibraryName;
 			if (library_name [0] == '+') {
 				switch (library_name) {
 				case "+CoreImage":
@@ -5238,13 +5407,16 @@ public partial class Generator : IMemberGatherer {
 			}
 		} else if (BindThirdPartyLibrary) {
 			// User should provide a LibraryName
-			throw ErrorHelper.CreateError (1042, /* Missing '[Field (LibraryName=value)]' for {0} (e.g."__Internal") */ type.FullName + "." + propertyName);
+			library_name = null;
+			return false;
 		} else {
 			library_name = type.Namespace;
 		}
 
 		if (!libraries.ContainsKey (library_name))
 			libraries.Add (library_name, library_path);
+
+		return true;
 	}
 
 	public string GetSelector (MemberInfo mi)
@@ -5361,6 +5533,8 @@ public partial class Generator : IMemberGatherer {
 				print ("namespace {0} {{", type.Namespace);
 				indent++;
 			}
+
+			WriteDocumentation (type);
 
 			bool core_image_filter = false;
 			string class_mod = null;
@@ -5572,6 +5746,15 @@ public partial class Generator : IMemberGatherer {
 
 			if (!is_static_class && !is_partial) {
 				if (!is_model && !external) {
+					if (BindingTouch.SupportsXmlDocumentation) {
+						print ("/// <summary>The Objective-C class handle for this class.</summary>");
+						print ("/// <value>The pointer to the Objective-C class.</value>");
+						print ("/// <remarks>");
+						print ("///     Each managed class mirrors an unmanaged Objective-C class.");
+						print ("///     This value contains the pointer to the Objective-C class.");
+						print ("///     It is similar to calling the managed <see cref=\"ObjCRuntime.Class.GetHandle(string)\" /> or the native <see href=\"https://developer.apple.com/documentation/objectivec/1418952-objc_getclass\">objc_getClass</see> method with the type name.");
+						print ("/// </remarks>");
+					}
 					print ("public {1} {2} ClassHandle {{ get {{ return class_ptr; }} }}\n", objc_type_name, TypeName == "NSObject" ? "virtual" : "override", NativeHandleType);
 				}
 
@@ -5607,6 +5790,9 @@ public partial class Generator : IMemberGatherer {
 					var is32BitNotSupported = Is64BitiOSOnly (type);
 					if (external) {
 						if (!disable_default_ctor) {
+							if (BindingTouch.SupportsXmlDocumentation) {
+								sw.WriteLine ($"\t\t/// <summary>Creates a new <see cref=\"{class_name.Replace ('<', '{').Replace ('>', '}')}\" /> with default values.</summary>");
+							}
 							GeneratedCode (sw, 2);
 							if (AttributeManager.HasAttribute<DesignatedDefaultCtorAttribute> (type))
 								sw.WriteLine ("\n\n[DesignatedInitializer]");
@@ -5631,6 +5817,9 @@ public partial class Generator : IMemberGatherer {
 						}
 					} else {
 						if (!disable_default_ctor) {
+							if (BindingTouch.SupportsXmlDocumentation) {
+								sw.WriteLine ($"\t\t/// <summary>Creates a new <see cref=\"{class_name.Replace ('<', '{').Replace ('>', '}')}\" /> with default values.</summary>");
+							}
 							GeneratedCode (sw, 2);
 							if (AttributeManager.HasAttribute<DesignatedDefaultCtorAttribute> (type))
 								sw.WriteLine ("\t\t[DesignatedInitializer]");
@@ -5660,6 +5849,15 @@ public partial class Generator : IMemberGatherer {
 						}
 						var nscoding = ConformToNSCoding (type);
 						if (nscoding) {
+							if (BindingTouch.SupportsXmlDocumentation) {
+								sw.WriteLine ($"\t\t/// <summary>A constructor that initializes the object from the data stored in the unarchiver object.</summary>");
+								sw.WriteLine ($"\t\t/// <param name=\"coder\">The unarchiver object.</param>");
+								sw.WriteLine ($"\t\t/// <remarks>");
+								sw.WriteLine ($"\t\t///   <para>This constructor is provided to allow the class to be initialized from an unarchiver (for example, during NIB deserialization). This is part of the <see cref=\"Foundation.NSCoding\" /> protocol.</para>");
+								sw.WriteLine ($"\t\t///   <para>If developers want to create a subclass of this object and continue to support deserialization from an archive, they should implement a constructor with an identical signature: taking a single parameter of type <see cref=\"Foundation.NSCoder\" /> and decorate it with the <c>[Export(\"initWithCoder:\"]</c> attribute.</para>");
+								sw.WriteLine ($"\t\t///   <para>The state of this object can also be serialized by using the <see cref=\"Foundation.INSCoding.EncodeTo\" /> companion method.</para>");
+								sw.WriteLine ($"\t\t/// </remarks>");
+							}
 							GeneratedCode (sw, 2);
 							sw.WriteLine ("\t\t[DesignatedInitializer]");
 							sw.WriteLine ("\t\t[EditorBrowsable (EditorBrowsableState.Advanced)]");
@@ -5693,6 +5891,53 @@ public partial class Generator : IMemberGatherer {
 						}
 					}
 					if (!is_sealed) {
+						if (BindingTouch.SupportsXmlDocumentation) {
+							sw.WriteLine ("\t\t/// <summary>Constructor to call on derived classes to skip initialization and merely allocate the object.</summary>");
+							sw.WriteLine ("\t\t/// <param name=\"t\">Unused sentinel value, pass NSObjectFlag.Empty.</param>");
+							sw.WriteLine ("\t\t/// <remarks>");
+							sw.WriteLine ("\t\t///     <para>");
+							sw.WriteLine ("\t\t///         This constructor should be called by derived classes when they completely construct the object in managed code and merely want the runtime to allocate and initialize the <see cref=\"Foundation.NSObject\" />.");
+							sw.WriteLine ("\t\t///         This is required to implement the two-step initialization process that Objective-C uses, the first step is to perform the object allocation, the second step is to initialize the object.");
+							sw.WriteLine ("\t\t///         When developers invoke this constructor, they take advantage of a direct path that goes all the way up to <see cref=\"Foundation.NSObject\" /> to merely allocate the object's memory and bind the Objective-C and C# objects together.");
+							sw.WriteLine ("\t\t///         The actual initialization of the object is up to the developer.");
+							sw.WriteLine ("\t\t///     </para>");
+							sw.WriteLine ("\t\t///     <para>");
+							sw.WriteLine ("\t\t///         This constructor is typically used by the binding generator to allocate the object, but prevent the actual initialization to take place.");
+							sw.WriteLine ("\t\t///         Once the allocation has taken place, the constructor has to initialize the object.");
+							sw.WriteLine ("\t\t///         With constructors generated by the binding generator this means that it manually invokes one of the \"init\" methods to initialize the object.");
+							sw.WriteLine ("\t\t///     </para>");
+							sw.WriteLine ("\t\t///     <para>It is the developer's responsibility to completely initialize the object if they chain up using this constructor chain.</para>");
+							sw.WriteLine ("\t\t///     <para>");
+							sw.WriteLine ("\t\t///         In general, if the developer's constructor invokes the corresponding base implementation, then it should also call an Objective-C init method.");
+							sw.WriteLine ("\t\t///         If this is not the case, developers should instead chain to the proper constructor in their class.");
+							sw.WriteLine ("\t\t///     </para>");
+							sw.WriteLine ("\t\t///     <para>");
+							sw.WriteLine ("\t\t///         The argument value is ignored and merely ensures that the only code that is executed is the construction phase is the basic <see cref=\"Foundation.NSObject\" /> allocation and runtime type registration.");
+							sw.WriteLine ("\t\t///         Typically the chaining would look like this:");
+							sw.WriteLine ("\t\t///     </para>");
+							sw.WriteLine ("\t\t///     <example>");
+							sw.WriteLine ("\t\t///             <code lang=\"csharp lang-csharp\"><![CDATA[");
+							sw.WriteLine ("\t\t/// //");
+							sw.WriteLine ("\t\t/// // The NSObjectFlag constructor merely allocates the object and registers the C# class with the Objective-C runtime if necessary.");
+							sw.WriteLine ("\t\t/// // No actual initXxx method is invoked, that is done later in the constructor");
+							sw.WriteLine ("\t\t/// //");
+							sw.WriteLine ("\t\t/// // This is taken from the iOS SDK's source code for the UIView class:");
+							sw.WriteLine ("\t\t/// //");
+							sw.WriteLine ("\t\t/// [Export (\"initWithFrame:\")]");
+							sw.WriteLine ("\t\t/// public UIView (System.Drawing.RectangleF frame) : base (NSObjectFlag.Empty)");
+							sw.WriteLine ("\t\t/// {");
+							sw.WriteLine ("\t\t///     // Invoke the init method now.");
+							sw.WriteLine ("\t\t///     var initWithFrame = new Selector (\"initWithFrame:\").Handle;");
+							sw.WriteLine ("\t\t///     if (IsDirectBinding) {");
+							sw.WriteLine ("\t\t///         Handle = ObjCRuntime.Messaging.IntPtr_objc_msgSend_CGRect (this.Handle, initWithFrame, frame);");
+							sw.WriteLine ("\t\t///     } else {");
+							sw.WriteLine ("\t\t///         Handle = ObjCRuntime.Messaging.IntPtr_objc_msgSendSuper_CGRect (this.SuperHandle, initWithFrame, frame);");
+							sw.WriteLine ("\t\t///     }");
+							sw.WriteLine ("\t\t/// }");
+							sw.WriteLine ("\t\t/// ]]></code>");
+							sw.WriteLine ("\t\t///     </example>");
+							sw.WriteLine ("\t\t/// </remarks>");
+						}
 						GeneratedCode (sw, 2);
 						sw.WriteLine ("\t\t[EditorBrowsable (EditorBrowsableState.Advanced)]");
 						sw.WriteLine ("\t\tprotected {0} (NSObjectFlag t) : base (t)", TypeName);
@@ -5702,6 +5947,17 @@ public partial class Generator : IMemberGatherer {
 						WriteMarkDirtyIfDerived (sw, type);
 						sw.WriteLine ("\t\t}");
 						sw.WriteLine ();
+					}
+
+					if (!is_sealed && BindingTouch.SupportsXmlDocumentation) {
+						sw.WriteLine ("\t\t/// <summary>A constructor used when creating managed representations of unmanaged objects. Called by the runtime.</summary>");
+						sw.WriteLine ("\t\t/// <param name=\"handle\">Pointer (handle) to the unmanaged object.</param>");
+						sw.WriteLine ("\t\t/// <remarks>");
+						sw.WriteLine ("\t\t///     <para>");
+						sw.WriteLine ("\t\t///         This constructor is invoked by the runtime infrastructure (<see cref=\"ObjCRuntime.Runtime.GetNSObject(System.IntPtr)\" />) to create a new managed representation for a pointer to an unmanaged Objective-C object.");
+						sw.WriteLine ("\t\t///         Developers should not invoke this method directly, instead they should call <see cref=\"ObjCRuntime.Runtime.GetNSObject(System.IntPtr)\" /> as it will prevent two instances of a managed object pointing to the same native object.");
+						sw.WriteLine ("\t\t///     </para>");
+						sw.WriteLine ("\t\t/// </remarks>");
 					}
 					GeneratedCode (sw, 2);
 					sw.WriteLine ("\t\t[EditorBrowsable (EditorBrowsableState.Advanced)]");
@@ -5835,7 +6091,8 @@ public partial class Generator : IMemberGatherer {
 			if (field_exports.Count != 0) {
 				foreach (var field_pi in field_exports.OrderBy (f => f.Name, StringComparer.Ordinal)) {
 					var fieldAttr = AttributeManager.GetCustomAttribute<FieldAttribute> (field_pi);
-					ComputeLibraryName (fieldAttr, type, field_pi.Name, out string library_name, out string library_path);
+					if (!TryComputeLibraryName (fieldAttr?.LibraryName, type, out string library_name, out string library_path))
+						throw ErrorHelper.CreateError (1042, /* Missing '[Field (LibraryName=value)]' for {0} (e.g."__Internal") */ type.FullName + "." + field_pi.Name);
 
 					string fieldTypeName;
 					string smartEnumTypeName = null;
@@ -6427,6 +6684,14 @@ public partial class Generator : IMemberGatherer {
 				} else
 					base_class = "UIAppearance";
 
+				if (BindingTouch.SupportsXmlDocumentation) {
+					print ($"/// <summary>Appearance class for objects of type <see cref=\"global::{type.FullName}\" />.</summary>");
+					print ($"/// <remarks>");
+					print ($"///     <para>This appearance class is a strongly typed subclass of UIAppearance that is intended to be used with objects of class <see cref=\"global::{type.FullName}\" />.</para>");
+					print ($"///     <para>You can obtain an instance to this class by either accessing the static <see cref=\"global::{type.FullName}.Appearance\" /> property or by calling <see cref=\"global::{type.FullName}.AppearanceWhenContainedIn(System.Type[])\" /> to get a UIAppearance that is context sensitive.</para>");
+					print ($"/// </remarks>");
+				}
+
 				string appearance_type_name = TypeName + "Appearance";
 				print ("public partial class {0} : {1} {{", appearance_type_name, base_class);
 				indent++;
@@ -6448,16 +6713,62 @@ public partial class Generator : IMemberGatherer {
 
 				indent--;
 				print ("}\n");
+
+				if (BindingTouch.SupportsXmlDocumentation) {
+					print ($"/// <summary>Strongly-typed property that returns the UIAppearance class for this class.</summary>");
+					print ($"/// <remarks>");
+					print ($"///   <para>Setting any appearance properties on this instance will affect the appearance of all instances of <see cref=\"global::{type.FullName}\" />.</para>");
+					print ($"///   <para>If developers want to control the appearance of subclasses of <see cref=\"global::{type.FullName}\" />, they should use the <see cref=\"global::{type.FullName}.GetAppearance&lt;T&gt;(UIKit.UITraitCollection,System.Type[])\" /> method.</para>");
+					print ($"/// </remarks>");
+				}
 				print ("public static {0}{1} Appearance {{", parent_implements_appearance ? "new " : "", appearance_type_name);
 				indent++;
 				print ("get {{ return new {0} (global::{1}.IntPtr_objc_msgSend (class_ptr, {2})); }}", appearance_type_name, NamespaceCache.Messaging, InlineSelectors ? "ObjCRuntime.Selector.GetHandle (\"appearance\")" : "UIAppearance.SelectorAppearance");
 				indent--;
 				print ("}\n");
+
+				if (BindingTouch.SupportsXmlDocumentation) {
+					print ($"/// <summary>Obtains the appearance proxy <see cref=\"global::{type.FullName}.{type.Name}Appearance\" /> for the subclass of <see cref=\"global::{type.FullName}\" />.</summary>");
+					print ($"/// <typeparam name=\"T\">The type for which the <see cref=\"global::UIKit.UIAppearance\" /> proxy must be returned.  This is a subclass of <see cref=\"global::{type.FullName}\" />.</typeparam>");
+					print ($"/// <returns>");
+					print ($"///   <para>An appearance proxy object for the specified type.</para>");
+					print ($"/// </returns>");
+					print ($"/// <remarks>");
+					print ($"///   <para>Setting any appearance properties on the returned object will affect the appearance of all classes and subclasses of the type parameter.</para>");
+					print ($"///   <para>Unlike the <see cref=\"global::{type.FullName}.Appearance\" /> property, or the <see cref=\"global::{type.FullName}.AppearanceWhenContainedIn(System.Type[])\" /> method which only work on instances of this particular class, the proxies returned by this method can be used to change the style of subclasses.</para>");
+					print ($"///   <para>The following example shows how this method works:</para>");
+					print ($"///   <example>");
+					print ($"///   <code lang=\"csharp lang-csharp\"><![CDATA[");
+					print ($"///var myTheme = {type.Name}.GetAppearance<My{type.Name}Subclass> ();");
+					print ($"///myTheme.TintColor = UIColor.Red;");
+					print ($"///]]></code>");
+					print ($"///   </example>");
+					print ($"///   <para>For more information, see the documentation for the <see cref=\"global::UIKit.UIAppearance\" /> class.</para>");
+					print ($"/// </remarks>");
+				}
 				print ("public static {0}{1} GetAppearance<T> () where T: {2} {{", parent_implements_appearance ? "new " : "", appearance_type_name, TypeName);
 				indent++;
 				print ("return new {0} (global::{1}.IntPtr_objc_msgSend (Class.GetHandle (typeof (T)), {2}));", appearance_type_name, NamespaceCache.Messaging, InlineSelectors ? "ObjCRuntime.Selector.GetHandle (\"appearance\")" : "UIAppearance.SelectorAppearance");
 				indent--;
 				print ("}\n");
+
+				if (BindingTouch.SupportsXmlDocumentation) {
+					print ($"/// <param name=\"containers\">List of types that developers want to have as the containers to apply this particular appearance</param>");
+					print ($"/// <summary>Returns a strongly typed <see cref=\"global::UIKit.UIAppearance\" /> for instances of this class when the view is hosted in the specified hierarchy.</summary>");
+					print ($"/// <returns>The appearance proxy object that developers can use to set properties when the given container hierarchy is active</returns>");
+					print ($"/// <remarks>");
+					print ($"///   <para>The returned object represents the <see cref=\"global::UIKit.UIAppearance\" /> proxy where developers can set appearance properties for instances of <see cref=\"global::{type.FullName}\" /> when those instances are contained in the hierarchy specified by the <paramref name=\"containers\" /> parameter.</para>");
+					print ($"///   <para>If developers want to control the appearance of subclasses of <see cref=\"global::{type.FullName}\" />, they should use the <see cref=\"global::{type.FullName}.GetAppearance&lt;T&gt;(UIKit.UITraitCollection,System.Type[])\" /> method.</para>");
+					print ($"///   <para>The following example shows how this method works:</para>");
+					print ($"///   <example>");
+					print ($"///     <code lang=\"csharp lang-csharp\"><![CDATA[");
+					print ($"///var mySliders = UISlider.AppearanceWhenContainedIn (typeof (UINavigationBar), typeof (UIPopoverController));");
+					print ($"///mySliders.TintColor = UIColor.Red;");
+					print ($"///]]></code>");
+					print ($"///   </example>");
+					print ($"///   <para>For more information, see the documentation for the <see cref=\"global::UIKit.UIAppearance\" /> class.</para>");
+					print ($"/// </remarks>");
+				}
 				print ("public static {0}{1} AppearanceWhenContainedIn (params Type [] containers)", parent_implements_appearance ? "new " : "", appearance_type_name);
 				print ("{");
 				indent++;
@@ -6465,24 +6776,106 @@ public partial class Generator : IMemberGatherer {
 				indent--;
 				print ("}\n");
 
+				if (BindingTouch.SupportsXmlDocumentation) {
+					print ($"/// <summary>Obtains the appearance proxy <see cref=\"global::{type.FullName}.{type.Name}Appearance\" /> for <see cref=\"global::{type.FullName}\" />.</summary>");
+					print ($"/// <param name=\"traits\">Trait collection to match.</param>");
+					print ($"/// <returns>");
+					print ($"///   <para>An appearance proxy object for the specified type.</para>");
+					print ($"/// </returns>");
+					print ($"/// <remarks>");
+					print ($"///   <para>The following example shows how this method works:</para>");
+					print ($"///   <example>");
+					print ($"///   <code lang=\"csharp lang-csharp\"><![CDATA[");
+					print ($"///var myTraits = new UITraitCollection ();");
+					print ($"///var myTheme = {type.Name}.GetAppearance (myTraits);");
+					print ($"///myTheme.TintColor = UIColor.Red;");
+					print ($"///]]></code>");
+					print ($"///   </example>");
+					print ($"///   <para>If developers want to control the appearance of subclasses of <see cref=\"global::{type.FullName}\" />, they should use the <see cref=\"global::{type.FullName}.GetAppearance&lt;T&gt;(UIKit.UITraitCollection)\" /> method.</para>");
+					print ($"///   <para>For more information, see the documentation for the <see cref=\"global::UIKit.UIAppearance\" /> class.</para>");
+					print ($"/// </remarks>");
+				}
 				print ("public static {0}{1} GetAppearance (UITraitCollection traits) {{", parent_implements_appearance ? "new " : "", appearance_type_name);
 				indent++;
 				print ("return new {0} (UIAppearance.GetAppearance (class_ptr, traits));", appearance_type_name);
 				indent--;
 				print ("}\n");
 
+				if (BindingTouch.SupportsXmlDocumentation) {
+					print ($"/// <summary>Obtains the appearance proxy <see cref=\"global::{type.FullName}.{type.Name}Appearance\" /> for <see cref=\"global::{type.FullName}\" />.</summary>");
+					print ($"/// <param name=\"traits\">Trait collection to match.</param>");
+					print ($"/// <param name=\"containers\">List of types that the developer wishes to have as the containers to apply this particular appearance.</param>");
+					print ($"/// <returns>");
+					print ($"///   <para>An appearance proxy object for the specified type.</para>");
+					print ($"/// </returns>");
+					print ($"/// <remarks>");
+					print ($"///   <para>The following example shows how this method works:</para>");
+					print ($"///   <example>");
+					print ($"///   <code lang=\"csharp lang-csharp\"><![CDATA[");
+					print ($"///var myTraits = new UITraitCollection ();");
+					print ($"///var myTheme = {type.Name}.GetAppearance (myTraits, typeof (UINavigationBar), typeof (UIPopoverController));");
+					print ($"///myTheme.TintColor = UIColor.Red;");
+					print ($"///]]></code>");
+					print ($"///   </example>");
+					print ($"///   <para>If developers want to control the appearance of subclasses of <see cref=\"global::{type.FullName}\" />, they should use the <see cref=\"global::{type.FullName}.GetAppearance&lt;T&gt;(UIKit.UITraitCollection,System.Type[])\" /> method.</para>");
+					print ($"///   <para>For more information, see the documentation for the <see cref=\"global::UIKit.UIAppearance\" /> class.</para>");
+					print ($"/// </remarks>");
+				}
 				print ("public static {0}{1} GetAppearance (UITraitCollection traits, params Type [] containers) {{", parent_implements_appearance ? "new " : "", appearance_type_name);
 				indent++;
 				print ("return new {0} (UIAppearance.GetAppearance (class_ptr, traits, containers));", appearance_type_name);
 				indent--;
 				print ("}\n");
 
+				if (BindingTouch.SupportsXmlDocumentation) {
+					print ($"/// <summary>Obtains the appearance proxy <see cref=\"global::{type.FullName}.{type.Name}Appearance\" /> for the subclass of <see cref=\"global::{type.FullName}\" />.</summary>");
+					print ($"/// <typeparam name=\"T\">The type for which the <see cref=\"global::UIKit.UIAppearance\" /> proxy must be returned.  This is a subclass of <see cref=\"global::{type.FullName}\" />.</typeparam>");
+					print ($"/// <param name=\"traits\">Trait collection to match.</param>");
+					print ($"/// <returns>");
+					print ($"///   <para>An appearance proxy object for the specified type.</para>");
+					print ($"/// </returns>");
+					print ($"/// <remarks>");
+					print ($"///   <para>Setting any appearance properties on the returned object will affect the appearance of all classes and subclasses of the type parameter.</para>");
+					print ($"///   <para>Unlike the <see cref=\"global::{type.FullName}.Appearance\" /> property, or the <see cref=\"global::{type.FullName}.AppearanceWhenContainedIn(System.Type[])\" /> method which only work on instances of this particular class, the proxies returned by this method can be used to change the style of subclasses.</para>");
+					print ($"///   <para>The following example shows how this method works:</para>");
+					print ($"///   <example>");
+					print ($"///   <code lang=\"csharp lang-csharp\"><![CDATA[");
+					print ($"///var myTraits = new UITraitCollection ();");
+					print ($"///var myTheme = {type.Name}.GetAppearance<My{type.Name}Subclass> (myTraits);");
+					print ($"///myTheme.TintColor = UIColor.Red;");
+					print ($"///]]></code>");
+					print ($"///   </example>");
+					print ($"///   <para>For more information, see the documentation for the <see cref=\"global::UIKit.UIAppearance\" /> class.</para>");
+					print ($"/// </remarks>");
+				}
 				print ("public static {0}{1} GetAppearance<T> (UITraitCollection traits) where T: {2} {{", parent_implements_appearance ? "new " : "", appearance_type_name, TypeName);
 				indent++;
 				print ("return new {0} (UIAppearance.GetAppearance (Class.GetHandle (typeof (T)), traits));", appearance_type_name);
 				indent--;
 				print ("}\n");
 
+				if (BindingTouch.SupportsXmlDocumentation) {
+					print ($"/// <summary>Obtains the appearance proxy <see cref=\"global::{type.FullName}.{type.Name}Appearance\" /> for the subclass of <see cref=\"global::{type.FullName}\" />.</summary>");
+					print ($"/// <typeparam name=\"T\">The type for which the <see cref=\"global::UIKit.UIAppearance\" /> proxy must be returned.  This is a subclass of <see cref=\"global::{type.FullName}\" />.</typeparam>");
+					print ($"/// <param name=\"traits\">Trait collection to match.</param>");
+					print ($"/// <param name=\"containers\">List of types that the developer wishes to have as the containers to apply this particular appearance.</param>");
+					print ($"/// <returns>");
+					print ($"///   <para>An appearance proxy object for the specified type.</para>");
+					print ($"/// </returns>");
+					print ($"/// <remarks>");
+					print ($"///   <para>Setting any appearance properties on the returned object will affect the appearance of all classes and subclasses of the type parameter.</para>");
+					print ($"///   <para>Unlike the <see cref=\"global::{type.FullName}.Appearance\" /> property, or the <see cref=\"global::{type.FullName}.AppearanceWhenContainedIn(System.Type[])\" /> method which only work on instances of this particular class, the proxies returned by this method can be used to change the style of subclasses.</para>");
+					print ($"///   <para>The following example shows how this method works:</para>");
+					print ($"///   <example>");
+					print ($"///   <code lang=\"csharp lang-csharp\"><![CDATA[");
+					print ($"///var myTraits = new UITraitCollection ();");
+					print ($"///var myTheme = {type.Name}.GetAppearance<My{type.Name}Subclass> (myTraits, typeof (UINavigationBar), typeof (UIPopoverController));");
+					print ($"///myTheme.TintColor = UIColor.Red;");
+					print ($"///]]></code>");
+					print ($"///   </example>");
+					print ($"///   <para>For more information, see the documentation for the <see cref=\"global::UIKit.UIAppearance\" /> class.</para>");
+					print ($"/// </remarks>");
+				}
 				print ("public static {0}{1} GetAppearance<T> (UITraitCollection traits, params Type [] containers) where T: {2}{{", parent_implements_appearance ? "new " : "", appearance_type_name, TypeName);
 				indent++;
 				print ("return new {0} (UIAppearance.GetAppearance (Class.GetHandle (typeof (T)), containers));", appearance_type_name);
@@ -6500,6 +6893,11 @@ public partial class Generator : IMemberGatherer {
 				print ("// Notifications");
 				print ("//");
 
+				print ($"/// <summary>Notifications posted by the <see cref=\"global::{type.FullName}\" /> class.</summary>");
+				print ("/// <remarks>");
+				print ("///    <para>This class contains various helper methods that allow developers to observe events posted in the notification hub (<see cref=\"Foundation.NSNotificationCenter\" />).</para>");
+				print ("///    <para>The methods defined in this class post events that invoke the provided method or lambda with a <see cref=\"Foundation.NSNotificationEventArgs\" /> parameter, which contains strongly typed properties for the notification arguments.</para>");
+				print ("/// </remarks>");
 				print ("public static partial class Notifications {\n");
 				foreach (var property in notifications.OrderBy (p => p.Name, StringComparer.Ordinal)) {
 					string notification_name = GetNotificationName (property);
@@ -6511,10 +6909,47 @@ public partial class Generator : IMemberGatherer {
 
 						if (event_args_type is not null)
 							notification_event_arg_types [event_args_type] = event_args_type;
+
+						print ($"\t/// <summary>Strongly typed notification for the <see cref=\"global::{type.FullName}.{property.Name}\" /> constant.</summary>");
+						print ($"\t/// <param name=\"handler\">The handler that responds to the notification when it occurs.</param>");
+						print ($"\t/// <returns>Token object that can be used to stop receiving notifications by either disposing it or passing it to <see cref=\"Foundation.NSNotificationCenter.RemoveObservers(System.Collections.Generic.IEnumerable{{Foundation.NSObject}})\" />.</returns>");
+						print ($"\t/// <remarks>");
+						print ($"\t///   <para>This method can be used to subscribe to <see cref=\"global::{type.FullName}.{property.Name}\" /> notifications.</para>");
+						print ($"\t///   <example>");
+						print ($"\t///   <code lang=\"csharp lang-csharp\"><![CDATA[");
+						print ($"\t/// // Listen to all notifications posted for any object");
+						print ($"\t/// var token = {type.Name}.Notifications.Observe{notification_name} ((notification) => {{");
+						print ($"\t///   Console.WriteLine (\"Observed {notification_name}Notification!\");");
+						print ($"\t/// }};");
+						print ($"\t/// ");
+						print ($"\t/// // Stop listening for notifications");
+						print ($"\t/// token.Dispose ();");
+						print ($"\t/// ]]></code>");
+						print ($"\t///   </example>");
+						print ($"\t/// </remarks>");
 						print ("\tpublic static NSObject Observe{0} (EventHandler<{1}> handler)", notification_name, event_name);
 						print ("\t{");
 						print ("\t\treturn {0}.AddObserver ({1}, notification => handler (null, new {2} (notification)));", notification_center, property.Name, event_name);
 						print ("\t}");
+
+						print ($"\t/// <summary>Strongly typed notification for the <see cref=\"global::{type.FullName}.{property.Name}\" /> constant.</summary>");
+						print ($"\t/// <param name=\"objectToObserve\">The specific object to observe.</param>");
+						print ($"\t/// <param name=\"handler\">The handler that responds to the notification when it occurs.</param>");
+						print ($"\t/// <returns>Token object that can be used to stop receiving notifications by either disposing it or passing it to <see cref=\"Foundation.NSNotificationCenter.RemoveObservers(System.Collections.Generic.IEnumerable{{Foundation.NSObject}})\" />.</returns>");
+						print ($"\t/// <remarks>");
+						print ($"\t///   <para>This method can be used to subscribe to <see cref=\"global::{type.FullName}.{property.Name}\" /> notifications.</para>");
+						print ($"\t///   <example>");
+						print ($"\t///     <code lang=\"csharp lang-csharp\"><![CDATA[");
+						print ($"\t/// // Listen to all notifications posted for a single object");
+						print ($"\t/// var token = {type.Name}.Notifications.Observe{notification_name} (objectToObserve, (notification) => {{");
+						print ($"\t///   Console.WriteLine ($\"Observed {notification_name}Notification for {{nameof (objectToObserve)}}!\");");
+						print ($"\t/// }};");
+						print ($"\t/// ");
+						print ($"\t/// // Stop listening for notifications");
+						print ($"\t/// token.Dispose ();");
+						print ($"\t/// ]]></code>");
+						print ($"\t///   </example>");
+						print ($"\t/// </remarks>");
 						print ("\tpublic static NSObject Observe{0} (NSObject objectToObserve, EventHandler<{1}> handler)", notification_name, event_name);
 						print ("\t{");
 						print ("\t\treturn {0}.AddObserver ({1}, notification => handler (null, new {2} (notification)), objectToObserve);", notification_center, property.Name, event_name);
@@ -6813,12 +7248,17 @@ public partial class Generator : IMemberGatherer {
 	{
 		var pt = p.ParameterType;
 
-		string name;
+		string name = string.Empty;
+		if (AttributeManager.HasAttribute<BlockCallbackAttribute> (p))
+			name = "[BlockCallback] ";
+		else if (AttributeManager.HasAttribute<CCallbackAttribute> (p))
+			name = "[CCallback] ";
+
 		if (pt.IsByRef) {
 			pt = pt.GetElementType ();
-			name = (removeRefTypes ? "" : (p.IsOut ? "out " : "ref ")) + TypeManager.RenderType (pt, p);
+			name += (removeRefTypes ? "" : (p.IsOut ? "out " : "ref ")) + TypeManager.RenderType (pt, p);
 		} else
-			name = TypeManager.RenderType (pt, p);
+			name += TypeManager.RenderType (pt, p);
 		if (!pt.IsValueType && AttributeManager.HasAttribute<NullAllowedAttribute> (p))
 			name += "?";
 		return name;

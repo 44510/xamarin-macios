@@ -348,8 +348,10 @@ class MyObjectErr : NSObject, IFoo1, IFoo2
 					new { Framework = "Chip", Version = "15.0" },
 					new { Framework = "ThreadNetwork", Version = "15.0" },
 					new { Framework = "BackgroundAssets", Version = "16.0" },
+					new { Framework = "DeviceDiscoveryExtension", Version = "16.0" },
 					new { Framework = "MetalFX", Version = "16.0" },
 					new { Framework = "PushToTalk", Version = "16.0" },
+					new { Framework = "SafetyKit", Version = "16.0" },
 					new { Framework = "SharedWithYou", Version = "16.0" },
 					new { Framework = "SharedWithYouCore", Version = "16.0" },
 					new { Framework = "Cinematic", Version = "17.0" },
@@ -457,8 +459,8 @@ class C : NSObject {
 				mtouch.Linker = MTouchLinker.DontLink;
 				mtouch.Registrar = MTouchRegistrar.Static;
 				mtouch.AssertExecuteFailure ();
-				mtouch.AssertError (4141, "Cannot register the selector 'retain' on the member 'C.Retain' because Xamarin.iOS implicitly registers this selector.", "testApp.cs", 5);
-				mtouch.AssertError (4141, "Cannot register the selector 'release' on the member 'C.Release' because Xamarin.iOS implicitly registers this selector.", "testApp.cs", 8);
+				mtouch.AssertError (4141, "Cannot register the selector 'retain' on the member 'C.Retain' because this selector is already implicitly registered.", "testApp.cs", 5);
+				mtouch.AssertError (4141, "Cannot register the selector 'release' on the member 'C.Release' because this selector is already implicitly registered.", "testApp.cs", 8);
 				mtouch.AssertErrorCount (2);
 				mtouch.AssertNoWarnings ();
 			}

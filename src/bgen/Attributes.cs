@@ -369,18 +369,6 @@ public class ParamsAttribute : Attribute {
 }
 
 //
-// These two attributes can be applied to parameters in a C# delegate
-// declaration to specify what kind of bridge needs to be provided on
-// callback.   Either a Block style setup, or a C-style setup
-//
-[AttributeUsage (AttributeTargets.Parameter, AllowMultiple = false)]
-public class BlockCallbackAttribute : Attribute { }
-
-[AttributeUsage (AttributeTargets.Parameter, AllowMultiple = false)]
-public class CCallbackAttribute : Attribute { }
-
-
-//
 // When applied, flags the [Flags] as a notification and generates the
 // code to strongly type the notification.
 //
@@ -847,7 +835,14 @@ public class ErrorDomainAttribute : Attribute {
 		ErrorDomain = domain;
 	}
 
+	public ErrorDomainAttribute (string domain, string libraryName)
+	{
+		ErrorDomain = domain;
+		LibraryName = libraryName;
+	}
+
 	public string ErrorDomain { get; set; }
+	public string LibraryName { get; set; }
 }
 
 [AttributeUsage (AttributeTargets.Field)]

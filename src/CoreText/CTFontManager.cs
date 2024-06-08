@@ -33,6 +33,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Diagnostics.CodeAnalysis;
 
 using ObjCRuntime;
 using CoreFoundation;
@@ -96,8 +97,7 @@ namespace CoreText {
 
 #if MONOMAC
 		[DllImport (Constants.CoreTextLibrary)]
-		[return: MarshalAs (UnmanagedType.I1)]
-		static extern bool CTFontManagerIsSupportedFont (IntPtr url);
+		static extern byte CTFontManagerIsSupportedFont (IntPtr url);
 
 #if NET
 		[UnsupportedOSPlatform ("maccatalyst")]
@@ -113,7 +113,7 @@ namespace CoreText {
 		{
 			if (url is null)
 				ObjCRuntime.ThrowHelper.ThrowArgumentNullException (nameof (url));
-			return CTFontManagerIsSupportedFont (url.Handle);
+			return CTFontManagerIsSupportedFont (url.Handle) != 0;
 		}
 #elif !XAMCORE_3_0
 #if NET
@@ -133,8 +133,7 @@ namespace CoreText {
 #endif
 
 		[DllImport (Constants.CoreTextLibrary)]
-		[return: MarshalAs (UnmanagedType.I1)]
-		static extern bool CTFontManagerRegisterFontsForURL (IntPtr fontUrl, CTFontManagerScope scope, ref IntPtr error);
+		unsafe static extern byte CTFontManagerRegisterFontsForURL (IntPtr fontUrl, CTFontManagerScope scope, IntPtr* error);
 		public static NSError? RegisterFontsForUrl (NSUrl fontUrl, CTFontManagerScope scope)
 		{
 			if (fontUrl is null)
@@ -143,7 +142,11 @@ namespace CoreText {
 			IntPtr error = IntPtr.Zero;
 
 			try {
-				if (CTFontManagerRegisterFontsForURL (fontUrl.Handle, scope, ref error))
+				bool rv;
+				unsafe {
+					rv = CTFontManagerRegisterFontsForURL (fontUrl.Handle, scope, &error) != 0;
+				}
+				if (rv)
 					return null;
 				else
 					return Runtime.GetNSObject<NSError> (error);
@@ -192,8 +195,7 @@ namespace CoreText {
 		[Deprecated (PlatformName.TvOS, 13, 0)]
 #endif
 		[DllImport (Constants.CoreTextLibrary)]
-		[return: MarshalAs (UnmanagedType.I1)]
-		static extern bool CTFontManagerRegisterFontsForURLs (IntPtr arrayRef, CTFontManagerScope scope, ref IntPtr error_array);
+		unsafe static extern byte CTFontManagerRegisterFontsForURLs (IntPtr arrayRef, CTFontManagerScope scope, IntPtr* error_array);
 
 #if NET
 		[SupportedOSPlatform ("ios")]
@@ -213,8 +215,10 @@ namespace CoreText {
 		{
 			using (var arr = EnsureNonNullArray (fontUrls, nameof (fontUrls))) {
 				IntPtr error_array = IntPtr.Zero;
-				if (CTFontManagerRegisterFontsForURLs (arr.Handle, scope, ref error_array))
-					return null;
+				unsafe {
+					if (CTFontManagerRegisterFontsForURLs (arr.Handle, scope, &error_array) != 0)
+						return null;
+				}
 				return ArrayFromHandle<NSError> (error_array, releaseAfterUse: true);
 			}
 		}
@@ -260,7 +264,7 @@ namespace CoreText {
 		[iOS (13, 0)]
 #endif
 		[DllImport (Constants.CoreTextLibrary)]
-		unsafe static extern void CTFontManagerRegisterFontURLs (/* CFArrayRef */ IntPtr fontUrls, CTFontManagerScope scope, [MarshalAs (UnmanagedType.I1)] bool enabled, BlockLiteral* registrationHandler);
+		unsafe static extern void CTFontManagerRegisterFontURLs (/* CFArrayRef */ IntPtr fontUrls, CTFontManagerScope scope, byte enabled, BlockLiteral* registrationHandler);
 
 #if NET
 		[SupportedOSPlatform ("tvos13.0")]
@@ -278,7 +282,7 @@ namespace CoreText {
 			using (var arr = EnsureNonNullArray (fontUrls, nameof (fontUrls))) {
 				if (registrationHandler is null) {
 					unsafe {
-						CTFontManagerRegisterFontURLs (arr.Handle, scope, enabled, null);
+						CTFontManagerRegisterFontURLs (arr.Handle, scope, enabled.AsByte (), null);
 					}
 				} else {
 					unsafe {
@@ -289,15 +293,14 @@ namespace CoreText {
 						using var block = new BlockLiteral ();
 						block.SetupBlockUnsafe (callback, registrationHandler);
 #endif
-						CTFontManagerRegisterFontURLs (arr.Handle, scope, enabled, &block);
+						CTFontManagerRegisterFontURLs (arr.Handle, scope, enabled.AsByte (), &block);
 					}
 				}
 			}
 		}
 
 		[DllImport (Constants.CoreTextLibrary)]
-		[return: MarshalAs (UnmanagedType.I1)]
-		static extern bool CTFontManagerUnregisterFontsForURL (IntPtr fotUrl, CTFontManagerScope scope, ref IntPtr error);
+		unsafe static extern byte CTFontManagerUnregisterFontsForURL (IntPtr fotUrl, CTFontManagerScope scope, IntPtr* error);
 
 		public static NSError? UnregisterFontsForUrl (NSUrl fontUrl, CTFontManagerScope scope)
 		{
@@ -307,7 +310,11 @@ namespace CoreText {
 			IntPtr error = IntPtr.Zero;
 
 			try {
-				if (CTFontManagerUnregisterFontsForURL (fontUrl.Handle, scope, ref error))
+				bool rv;
+				unsafe {
+					rv = CTFontManagerUnregisterFontsForURL (fontUrl.Handle, scope, &error) != 0;
+				}
+				if (rv)
 					return null;
 				else
 					return Runtime.GetNSObject<NSError> (error);
@@ -332,8 +339,7 @@ namespace CoreText {
 		[Deprecated (PlatformName.TvOS, 13, 0)]
 #endif
 		[DllImport (Constants.CoreTextLibrary)]
-		[return: MarshalAs (UnmanagedType.I1)]
-		static extern bool CTFontManagerUnregisterFontsForURLs (IntPtr arrayRef, CTFontManagerScope scope, ref IntPtr error_array);
+		unsafe static extern byte CTFontManagerUnregisterFontsForURLs (IntPtr arrayRef, CTFontManagerScope scope, IntPtr* error_array);
 
 #if NET
 		[SupportedOSPlatform ("ios")]
@@ -353,8 +359,10 @@ namespace CoreText {
 		{
 			IntPtr error_array = IntPtr.Zero;
 			using (var arr = EnsureNonNullArray (fontUrls, nameof (fontUrls))) {
-				if (CTFontManagerUnregisterFontsForURLs (arr.Handle, scope, ref error_array))
-					return null;
+				unsafe {
+					if (CTFontManagerUnregisterFontsForURLs (arr.Handle, scope, &error_array) != 0)
+						return null;
+				}
 				return ArrayFromHandle<NSError> (error_array, releaseAfterUse: true);
 			}
 		}
@@ -435,17 +443,18 @@ namespace CoreText {
 		}
 
 		[DllImport (Constants.CoreTextLibrary)]
-		[return: MarshalAs (UnmanagedType.I1)]
-		static extern bool CTFontManagerRegisterGraphicsFont (IntPtr cgfont, out IntPtr error);
+		unsafe static extern byte CTFontManagerRegisterGraphicsFont (IntPtr cgfont, IntPtr* error);
 
-		public static bool RegisterGraphicsFont (CGFont font, out NSError? error)
+		public static bool RegisterGraphicsFont (CGFont font, [NotNullWhen (true)] out NSError? error)
 		{
 			if (font is null)
 				ObjCRuntime.ThrowHelper.ThrowArgumentNullException (nameof (font));
 			IntPtr h = IntPtr.Zero;
 			bool ret;
 			try {
-				ret = CTFontManagerRegisterGraphicsFont (font.Handle, out h);
+				unsafe {
+					ret = CTFontManagerRegisterGraphicsFont (font.Handle, &h) != 0;
+				}
 				if (ret)
 					error = null;
 				else
@@ -458,8 +467,7 @@ namespace CoreText {
 		}
 
 		[DllImport (Constants.CoreTextLibrary)]
-		[return: MarshalAs (UnmanagedType.I1)]
-		static extern bool CTFontManagerUnregisterGraphicsFont (IntPtr cgfont, out IntPtr error);
+		unsafe static extern byte CTFontManagerUnregisterGraphicsFont (IntPtr cgfont, IntPtr* error);
 
 		public static bool UnregisterGraphicsFont (CGFont font, out NSError? error)
 		{
@@ -468,7 +476,9 @@ namespace CoreText {
 			IntPtr h = IntPtr.Zero;
 			bool ret;
 			try {
-				ret = CTFontManagerUnregisterGraphicsFont (font.Handle, out h);
+				unsafe {
+					ret = CTFontManagerUnregisterGraphicsFont (font.Handle, &h) != 0;
+				}
 				if (ret)
 					error = null;
 				else
@@ -536,7 +546,7 @@ namespace CoreText {
 		[iOS (13, 0)]
 #endif
 		[DllImport (Constants.CoreTextLibrary)]
-		static extern unsafe void CTFontManagerRegisterFontDescriptors (/* CFArrayRef */ IntPtr fontDescriptors, CTFontManagerScope scope, [MarshalAs (UnmanagedType.I1)] bool enabled, BlockLiteral* registrationHandler);
+		static extern unsafe void CTFontManagerRegisterFontDescriptors (/* CFArrayRef */ IntPtr fontDescriptors, CTFontManagerScope scope, byte enabled, BlockLiteral* registrationHandler);
 
 #if NET
 		[SupportedOSPlatform ("tvos13.0")]
@@ -553,7 +563,7 @@ namespace CoreText {
 		{
 			using (var arr = EnsureNonNullArray (fontDescriptors, nameof (fontDescriptors))) {
 				if (registrationHandler is null) {
-					CTFontManagerRegisterFontDescriptors (arr.Handle, scope, enabled, null);
+					CTFontManagerRegisterFontDescriptors (arr.Handle, scope, enabled.AsByte (), null);
 				} else {
 #if NET
 					delegate* unmanaged<IntPtr, IntPtr, byte, byte> trampoline = &TrampolineRegistrationHandler;
@@ -562,7 +572,7 @@ namespace CoreText {
 					using var block = new BlockLiteral ();
 					block.SetupBlockUnsafe (callback, registrationHandler);
 #endif
-					CTFontManagerRegisterFontDescriptors (arr.Handle, scope, enabled, &block);
+					CTFontManagerRegisterFontDescriptors (arr.Handle, scope, enabled.AsByte (), &block);
 				}
 			}
 		}
@@ -619,7 +629,7 @@ namespace CoreText {
 		[iOS (13,0)]
 #endif
 		[DllImport (Constants.CoreTextLibrary)]
-		static extern /* CFArrayRef */ IntPtr CTFontManagerCopyRegisteredFontDescriptors (CTFontManagerScope scope, [MarshalAs (UnmanagedType.I1)] bool enabled);
+		static extern /* CFArrayRef */ IntPtr CTFontManagerCopyRegisteredFontDescriptors (CTFontManagerScope scope, byte enabled);
 
 #if NET
 		[SupportedOSPlatform ("ios13.0")]
@@ -634,7 +644,7 @@ namespace CoreText {
 #endif
 		public static CTFontDescriptor[]? GetRegisteredFontDescriptors (CTFontManagerScope scope, bool enabled)
 		{
-			var p = CTFontManagerCopyRegisteredFontDescriptors (scope, enabled);
+			var p = CTFontManagerCopyRegisteredFontDescriptors (scope, enabled.AsByte ());
 			// Copy/Create rule - we must release the CFArrayRef
 			return ArrayFromHandle<CTFontDescriptor> (p, releaseAfterUse: true);
 		}
@@ -701,7 +711,7 @@ namespace CoreText {
 		[iOS (13,0)]
 #endif
 		[DllImport (Constants.CoreTextLibrary)]
-		static extern unsafe void CTFontManagerRegisterFontsWithAssetNames (/* CFArrayRef */ IntPtr fontAssetNames, /* CFBundleRef _Nullable */ IntPtr bundle, CTFontManagerScope scope, [MarshalAs (UnmanagedType.I1)] bool enabled, BlockLiteral* registrationHandler);
+		static extern unsafe void CTFontManagerRegisterFontsWithAssetNames (/* CFArrayRef */ IntPtr fontAssetNames, /* CFBundleRef _Nullable */ IntPtr bundle, CTFontManagerScope scope, byte enabled, BlockLiteral* registrationHandler);
 
 		// reminder that NSBundle and CFBundle are NOT toll-free bridged :(
 #if NET
@@ -720,7 +730,7 @@ namespace CoreText {
 		{
 			using (var arr = EnsureNonNullArray (assetNames, nameof (assetNames))) {
 				if (registrationHandler is null) {
-					CTFontManagerRegisterFontsWithAssetNames (arr.Handle, bundle.GetHandle (), scope, enabled, null);
+					CTFontManagerRegisterFontsWithAssetNames (arr.Handle, bundle.GetHandle (), scope, enabled.AsByte (), null);
 				} else {
 #if NET
 					delegate* unmanaged<IntPtr, IntPtr, byte, byte> trampoline = &TrampolineRegistrationHandler;
@@ -729,7 +739,7 @@ namespace CoreText {
 					using var block = new BlockLiteral ();
 					block.SetupBlockUnsafe (callback, registrationHandler);
 #endif
-					CTFontManagerRegisterFontsWithAssetNames (arr.Handle, bundle.GetHandle (), scope, enabled, &block);
+					CTFontManagerRegisterFontsWithAssetNames (arr.Handle, bundle.GetHandle (), scope, enabled.AsByte (), &block);
 				}
 			}
 		}
