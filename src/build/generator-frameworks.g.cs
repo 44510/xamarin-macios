@@ -53,7 +53,9 @@ partial class Frameworks {
 		"CoreTelephony",
 		"CoreText",
 		"CoreVideo",
+		"CryptoTokenKit",
 		"DeviceCheck",
+		"DeviceDiscoveryExtension",
 		"EventKit",
 		"EventKitUI",
 		"ExternalAccessory",
@@ -114,6 +116,7 @@ partial class Frameworks {
 		"QuickLookThumbnailing",
 		"ReplayKit",
 		"SafariServices",
+		"SafetyKit",
 		"SceneKit",
 		"ScreenTime",
 		"Security",
@@ -188,6 +191,7 @@ partial class Frameworks {
 		"CoreText",
 		"CoreVideo",
 		"CoreWlan",
+		"CryptoTokenKit",
 		"DeviceCheck",
 		"EventKit",
 		"ExecutionPolicy",
@@ -251,6 +255,7 @@ partial class Frameworks {
 		"QuickLookUI",
 		"ReplayKit",
 		"SafariServices",
+		"SafetyKit",
 		"SceneKit",
 		"ScreenCaptureKit",
 		"ScreenTime",
@@ -302,6 +307,7 @@ partial class Frameworks {
 		"CoreMotion",
 		"CoreText",
 		"CoreVideo",
+		"CryptoTokenKit",
 		"DeviceCheck",
 		"EventKit",
 		"Foundation",
@@ -320,6 +326,7 @@ partial class Frameworks {
 		"OSLog",
 		"PassKit",
 		"PushKit",
+		"SafetyKit",
 		"SceneKit",
 		"Security",
 		"ShazamKit",
@@ -365,7 +372,9 @@ partial class Frameworks {
 		"CoreSpotlight",
 		"CoreText",
 		"CoreVideo",
+		"CryptoTokenKit",
 		"DeviceCheck",
+		"DeviceDiscoveryUI",
 		"ExternalAccessory",
 		"Foundation",
 		"GameController",
@@ -468,6 +477,7 @@ partial class Frameworks {
 		"CoreText",
 		"CoreVideo",
 		"CoreWlan",
+		"CryptoTokenKit",
 		"DeviceCheck",
 		"EventKit",
 		"EventKitUI",
@@ -602,7 +612,10 @@ partial class Frameworks {
 	bool? _CoreText;
 	bool? _CoreVideo;
 	bool? _CoreWlan;
+	bool? _CryptoTokenKit;
 	bool? _DeviceCheck;
+	bool? _DeviceDiscoveryExtension;
+	bool? _DeviceDiscoveryUI;
 	bool? _EventKit;
 	bool? _EventKitUI;
 	bool? _ExecutionPolicy;
@@ -677,6 +690,7 @@ partial class Frameworks {
 	bool? _QuickLookUI;
 	bool? _ReplayKit;
 	bool? _SafariServices;
+	bool? _SafetyKit;
 	bool? _SceneKit;
 	bool? _ScreenCaptureKit;
 	bool? _ScreenTime;
@@ -767,7 +781,10 @@ partial class Frameworks {
 	public bool HaveCoreText { get { if (!_CoreText.HasValue) _CoreText = GetValue ("CoreText"); return _CoreText.Value; } }
 	public bool HaveCoreVideo { get { if (!_CoreVideo.HasValue) _CoreVideo = GetValue ("CoreVideo"); return _CoreVideo.Value; } }
 	public bool HaveCoreWlan { get { if (!_CoreWlan.HasValue) _CoreWlan = GetValue ("CoreWlan"); return _CoreWlan.Value; } }
+	public bool HaveCryptoTokenKit { get { if (!_CryptoTokenKit.HasValue) _CryptoTokenKit = GetValue ("CryptoTokenKit"); return _CryptoTokenKit.Value; } }
 	public bool HaveDeviceCheck { get { if (!_DeviceCheck.HasValue) _DeviceCheck = GetValue ("DeviceCheck"); return _DeviceCheck.Value; } }
+	public bool HaveDeviceDiscoveryExtension { get { if (!_DeviceDiscoveryExtension.HasValue) _DeviceDiscoveryExtension = GetValue ("DeviceDiscoveryExtension"); return _DeviceDiscoveryExtension.Value; } }
+	public bool HaveDeviceDiscoveryUI { get { if (!_DeviceDiscoveryUI.HasValue) _DeviceDiscoveryUI = GetValue ("DeviceDiscoveryUI"); return _DeviceDiscoveryUI.Value; } }
 	public bool HaveEventKit { get { if (!_EventKit.HasValue) _EventKit = GetValue ("EventKit"); return _EventKit.Value; } }
 	public bool HaveEventKitUI { get { if (!_EventKitUI.HasValue) _EventKitUI = GetValue ("EventKitUI"); return _EventKitUI.Value; } }
 	public bool HaveExecutionPolicy { get { if (!_ExecutionPolicy.HasValue) _ExecutionPolicy = GetValue ("ExecutionPolicy"); return _ExecutionPolicy.Value; } }
@@ -842,6 +859,7 @@ partial class Frameworks {
 	public bool HaveQuickLookUI { get { if (!_QuickLookUI.HasValue) _QuickLookUI = GetValue ("QuickLookUI"); return _QuickLookUI.Value; } }
 	public bool HaveReplayKit { get { if (!_ReplayKit.HasValue) _ReplayKit = GetValue ("ReplayKit"); return _ReplayKit.Value; } }
 	public bool HaveSafariServices { get { if (!_SafariServices.HasValue) _SafariServices = GetValue ("SafariServices"); return _SafariServices.Value; } }
+	public bool HaveSafetyKit { get { if (!_SafetyKit.HasValue) _SafetyKit = GetValue ("SafetyKit"); return _SafetyKit.Value; } }
 	public bool HaveSceneKit { get { if (!_SceneKit.HasValue) _SceneKit = GetValue ("SceneKit"); return _SceneKit.Value; } }
 	public bool HaveScreenCaptureKit { get { if (!_ScreenCaptureKit.HasValue) _ScreenCaptureKit = GetValue ("ScreenCaptureKit"); return _ScreenCaptureKit.Value; } }
 	public bool HaveScreenTime { get { if (!_ScreenTime.HasValue) _ScreenTime = GetValue ("ScreenTime"); return _ScreenTime.Value; } }

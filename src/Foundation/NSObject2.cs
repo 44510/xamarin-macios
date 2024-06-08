@@ -20,6 +20,7 @@
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -252,9 +253,17 @@ namespace Foundation {
 			GC.SuppressFinalize (this);
 		}
 
+#if NET
+		// This method should never be called when using the managed static registrar, so assert that never happens by throwing an exception in that case.
+		// This method doesn't necessarily work with NativeAOT, but this is covered by the exception, because the managed static registrar is required for NativeAOT.
+		//
+		// IL2072: 'type' argument does not satisfy 'DynamicallyAccessedMemberTypes.PublicConstructors', 'DynamicallyAccessedMemberTypes.NonPublicConstructors' in call to 'System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(Type)'. The return value of method 'ObjCRuntime.Runtime.GetGCHandleTarget(IntPtr)' does not have matching annotations. The source value must declare at least the same requirements as those declared on the target location it is assigned to.
+		[UnconditionalSuppressMessage("", "IL2072", Justification = "The APIs this method tries to access are marked by other means, so this is linker-safe.")]
+#endif
 		internal static IntPtr CreateNSObject (IntPtr type_gchandle, IntPtr handle, Flags flags)
 		{
 #if NET
+			// Note that the code in this method doesn't necessarily work with NativeAOT, so assert that never happens by throwing an exception if using the managed static registrar (which is required for NativeAOT)
 			if (Runtime.IsManagedStaticRegistrar) {
 				throw new System.Diagnostics.UnreachableException ();
 			}
@@ -318,7 +327,7 @@ namespace Foundation {
 #endif // !NET || !__MACOS__
 
 		[DllImport ("__Internal")]
-		static extern void xamarin_release_managed_ref (IntPtr handle, [MarshalAs (UnmanagedType.I1)] bool user_type);
+		static extern void xamarin_release_managed_ref (IntPtr handle, byte user_type);
 
 		static void RegisterToggleReference (NSObject obj, IntPtr handle, bool isCustomType)
 		{
@@ -395,8 +404,7 @@ namespace Foundation {
 		}
 
 		[DllImport ("__Internal")]
-		[return: MarshalAs (UnmanagedType.I1)]
-		static extern bool xamarin_set_gchandle_with_flags_safe (IntPtr handle, IntPtr gchandle, XamarinGCHandleFlags flags);
+		static extern byte xamarin_set_gchandle_with_flags_safe (IntPtr handle, IntPtr gchandle, XamarinGCHandleFlags flags);
 
 		void CreateManagedRef (bool retain)
 		{
@@ -406,7 +414,7 @@ namespace Foundation {
 				var flags = XamarinGCHandleFlags.HasManagedRef | XamarinGCHandleFlags.InitialSet | XamarinGCHandleFlags.WeakGCHandle;
 				var gchandle = GCHandle.Alloc (this, GCHandleType.WeakTrackResurrection);
 				var h = GCHandle.ToIntPtr (gchandle);
-				if (!xamarin_set_gchandle_with_flags_safe (handle, h, flags)) {
+				if (xamarin_set_gchandle_with_flags_safe (handle, h, flags) == 0) {
 					// A GCHandle already existed: this shouldn't happen, but let's handle it anyway.
 					Runtime.NSLog ($"Tried to create a managed reference from an object that already has a managed reference (type: {GetType ()})");
 					gchandle.Free ();
@@ -426,7 +434,7 @@ namespace Foundation {
 				/* If we're a wrapper type, we need to unregister here, since we won't enter the release trampoline */
 				Runtime.NativeObjectHasDied (handle, this);
 			}
-			xamarin_release_managed_ref (handle, user_type);
+			xamarin_release_managed_ref (handle, user_type.AsByte ());
 			FreeData ();
 		}
 
@@ -532,9 +540,15 @@ namespace Foundation {
 			}
 		}
 
+#if NET
+		// Note that this method does not work with NativeAOT, so throw an exception in that case.
+		// IL2075: 'this' argument does not satisfy 'DynamicallyAccessedMemberTypes.Interfaces' in call to 'System.Type.GetInterfaces()'. The return value of method 'System.Object.GetType()' does not have matching annotations. The source value must declare at least the same requirements as those declared on the target location it is assigned to.
+		[UnconditionalSuppressMessage ("", "IL2075", Justification = "The APIs this method tries to access are marked by other means, so this is linker-safe.")]
+#endif
 		bool DynamicConformsToProtocol (NativeHandle protocol)
 		{
 #if NET
+			// Note that this method does not work with NativeAOT, so throw an exception in that case.
 			if (Runtime.IsNativeAOT)
 				throw Runtime.CreateNativeAOTNotSupportedException ();
 #endif

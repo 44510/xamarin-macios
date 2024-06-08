@@ -15,7 +15,7 @@ using Xamarin.Utils;
 namespace GeneratorTests {
 	[TestFixture ()]
 	[Parallelizable (ParallelScope.All)]
-	public class BGenTests {
+	public class BGenTests : BGenBase {
 		// Removing the following variable might make running the unit tests in VSMac fail.
 		static Type variable_to_keep_reference_to_system_runtime_compilerservices_unsafe_assembly = typeof (System.Runtime.CompilerServices.Unsafe);
 
@@ -1165,7 +1165,14 @@ namespace GeneratorTests {
 			bgen.AssertNoMethod ("NS.Whatever", "set_IPropAOpt", parameterTypes: "Foundation.NSObject");
 			bgen.AssertMethod ("NS.Whatever", "set_IPropBOpt", parameterTypes: "Foundation.NSObject");
 			bgen.AssertNoMethod ("NS.Whatever", "get_IPropBOpt");
-			bgen.AssertPublicMethodCount ("NS.Whatever", 9); // 6 accessors + 2 constructors + ClassHandle getter
+			bgen.AssertMethod ("NS.Whatever", ".ctor");
+			bgen.AssertMethod ("NS.Whatever", ".ctor", parameterTypes: "Foundation.NSObjectFlag");
+#if NET
+			bgen.AssertMethod ("NS.Whatever", ".ctor", parameterTypes: "ObjCRuntime.NativeHandle");
+#else
+			bgen.AssertMethod ("NS.Whatever", ".ctor", parameterTypes: "System.IntPtr");
+#endif
+			bgen.AssertPublicMethodCount ("NS.Whatever", 10); // 6 accessors + 3 constructors + ClassHandle getter
 
 			bgen.AssertMethod ("NS.IIProtocol", "get_IPropA");
 			bgen.AssertNoMethod ("NS.IIProtocol", "set_IPropA", parameterTypes: "Foundation.NSObject");
@@ -1413,6 +1420,13 @@ namespace GeneratorTests {
 			Assert.That (failures, Is.Empty, "Failures");
 		}
 
+		[Test]
+		[TestCase (Profile.iOS)]
+		public void ErrorDomain (Profile profile)
+		{
+			BuildFile (profile, true, true, "tests/errordomain.cs");
+		}
+
 #if !NET
 		[Ignore ("This only applies to .NET")]
 #endif
@@ -1432,6 +1446,76 @@ namespace GeneratorTests {
 		public void InternalDelegate ()
 		{
 			BuildFile (Profile.iOS, "tests/internal-delegate.cs");
+		}
+
+		[Test]
+		[TestCase (Profile.iOS)]
+#if NET
+		[TestCase (Profile.MacCatalyst)]
+#endif
+		[TestCase (Profile.macOSMobile)]
+		[TestCase (Profile.tvOS)]
+		public void XmlDocs (Profile profile)
+		{
+			var bgen = BuildFile (profile, false, true, "tests/xmldocs.cs");
+			Assert.That (bgen.XmlDocumentation, Does.Exist);
+			var contents = File.ReadAllText (bgen.XmlDocumentation);
+#if NET
+			var expectedContentsPath = Path.Combine (Configuration.SourceRoot, "tests", "generator", $"ExpectedXmlDocs.{profile.AsPlatform ().AsString ()}.xml");
+#else
+			var expectedContentsPath = Path.Combine (Configuration.SourceRoot, "tests", "generator", $"ExpectedXmlDocs.{profile.AsPlatform ().AsString ()}.legacy.xml");
+#endif
+			if (!File.Exists (expectedContentsPath))
+				File.WriteAllText (expectedContentsPath, string.Empty);
+
+			var expectedContents = File.ReadAllText (expectedContentsPath);
+
+			// Fix up a few potential whitespace differences we don't care about.
+			contents = contents.Trim ().Replace ("\r", "");
+			expectedContents = expectedContents.Trim ().Replace ("\r", "");
+
+			if (contents != expectedContents) {
+				if (!string.IsNullOrEmpty (Environment.GetEnvironmentVariable ("WRITE_KNOWN_FAILURES"))) {
+					File.WriteAllText (expectedContentsPath, contents);
+					Assert.AreEqual (expectedContents, contents, $"Xml docs: The known failures have been updated in {expectedContentsPath}, so please commit the results. Re-running the test should now succeed.");
+				} else {
+					Assert.AreEqual (expectedContents, contents, $"Xml docs: If this is expected, set the WRITE_KNOWN_FAILURES=1 environment variable, run the test again, and commit the changes to the {expectedContentsPath} file.");
+				}
+			}
+		}
+
+		[Test]
+#if !NET
+		[Ignore ("This only applies to .NET")]
+#endif
+		[TestCase (Profile.iOS)]
+		[TestCase (Profile.MacCatalyst)]
+		[TestCase (Profile.macOSMobile)]
+		[TestCase (Profile.tvOS)]
+		public void PreviewAPIs (Profile profile)
+		{
+			var bgen = BuildFile (profile, false, true, "tests/preview.cs");
+
+			// Each Experimental attribute in the api definition has its own diagnostic ID (with an incremental number)
+			// Here we collect all diagnostic IDS for all the Experimental attributes in the compiled assembly,
+			// and assert that they're all present at least once.
+			var module = bgen.ApiAssembly.MainModule;
+			var allExperimentalAttributes = module.GetCustomAttributes ().Where (v => v.AttributeType.Name == "ExperimentalAttribute");
+			var allExperimentalDiagnosticIds = allExperimentalAttributes.Select (v => (string) v.ConstructorArguments [0].Value).ToHashSet ();
+			var previewApiCount = 32;
+			var expectedDiagnosticIds = Enumerable.Range (1, previewApiCount).Select (v => $"BGEN{v:0000}").ToHashSet ();
+
+			var unexpectedDiagnosticIds = allExperimentalDiagnosticIds.Except (expectedDiagnosticIds).OrderBy (v => v);
+			var missingDiagnosticIds = expectedDiagnosticIds.Except (allExperimentalDiagnosticIds).OrderBy (v => v);
+
+			Assert.That (unexpectedDiagnosticIds, Is.Empty, "No unexpected diagnostic IDs"); // you probably need to increase the previewApiCount variable above (if you added more definitions to the tests/preview.cs file).
+			Assert.That (missingDiagnosticIds, Is.Empty, "No missing diagnostic IDs");
+		}
+
+		[Test]
+		public void DelegateParameterAttributes ()
+		{
+			BuildFile (Profile.iOS, "tests/delegate-parameter-attributes.cs");
 		}
 
 #if NET
@@ -1472,38 +1556,5 @@ namespace GeneratorTests {
 			bgen.AssertNoWarnings ();
 		}
 #endif
-
-		BGenTool BuildFile (Profile profile, params string [] filenames)
-		{
-			return BuildFile (profile, true, false, filenames);
-		}
-
-		BGenTool BuildFile (Profile profile, bool nowarnings, params string [] filenames)
-		{
-			return BuildFile (profile, nowarnings, false, filenames);
-		}
-
-		BGenTool BuildFile (Profile profile, bool nowarnings, bool processEnums, params string [] filenames)
-		{
-			return BuildFile (profile, nowarnings, processEnums, Enumerable.Empty<string> (), filenames);
-		}
-
-		BGenTool BuildFile (Profile profile, bool nowarnings, bool processEnums, IEnumerable<string> references, params string [] filenames)
-		{
-			Configuration.IgnoreIfIgnoredPlatform (profile.AsPlatform ());
-			var bgen = new BGenTool ();
-			bgen.Profile = profile;
-			bgen.ProcessEnums = processEnums;
-			bgen.Defines = BGenTool.GetDefaultDefines (bgen.Profile);
-			bgen.References = references.ToList ();
-			TestContext.Out.WriteLine (TestContext.CurrentContext.Test.FullName);
-			foreach (var filename in filenames)
-				TestContext.Out.WriteLine ($"\t{filename}");
-			bgen.CreateTemporaryBinding (filenames.Select ((filename) => File.ReadAllText (Path.Combine (Configuration.SourceRoot, "tests", "generator", filename))).ToArray ());
-			bgen.AssertExecute ("build");
-			if (nowarnings)
-				bgen.AssertNoWarnings ();
-			return bgen;
-		}
 	}
 }

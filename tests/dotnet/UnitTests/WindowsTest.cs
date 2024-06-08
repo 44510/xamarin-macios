@@ -94,11 +94,11 @@ namespace Xamarin.Tests {
 					}
 					return true;
 				});
-			hotRestartAppBundleFiles = hotRestartAppBundleFiles
+			var hotRestartAppBundleFilesWithoutPrebuiltFiles = hotRestartAppBundleFiles
 				.Except (excludedPrebuiltAppEntries)
 				.ToList ();
 
-			var merged = hotRestartAppBundleFiles
+			var merged = hotRestartAppBundleFilesWithoutPrebuiltFiles
 				.Union (payloadFiles)
 				.Union (contentFiles)
 				.Where (v => {
@@ -118,7 +118,7 @@ namespace Xamarin.Tests {
 				.OrderBy (v => v)
 				.ToList ();
 
-			// The reference to the bindings-framework-test project is skipped on Windows, because we can't build binding projects unless we're connected to a Mac.
+			// The reference to the bindings-xcframework-test project is skipped on Windows, because we can't build binding projects unless we're connected to a Mac.
 			AddOrAssert (merged, "bindings-framework-test.dll");
 			AddOrAssert (merged, "bindings-framework-test.pdb");
 			AddOrAssert (merged, Path.Combine ("Frameworks", "XTest.framework")); // XTest.framework comes from bindings-framework-test.csproj
@@ -130,6 +130,24 @@ namespace Xamarin.Tests {
 
 			var rids = runtimeIdentifiers.Split (';');
 			BundleStructureTest.CheckAppBundleContents (platform, merged, rids, BundleStructureTest.CodeSignature.None, configuration == "Release");
+
+			// Assert that no files were copied to the signed directory after the app was signed.
+			// https://github.com/xamarin/xamarin-macios/issues/19278
+			var signedAppBundleFilesWithInfo = hotRestartAppBundleFiles.Select (v => new { Name = v, Info = new FileInfo (v) });
+			Console.WriteLine ($"{signedAppBundleFilesWithInfo.Count ()} files in app bundle:");
+			foreach (var fileWithInfo2 in signedAppBundleFilesWithInfo) {
+				Console.WriteLine ($"    {fileWithInfo2.Info.LastWriteTimeUtc.ToString ("O")} {fileWithInfo2.Name}");
+			}
+
+			var codesignInfo = signedAppBundleFilesWithInfo.Single (v => v.Name.EndsWith ("_CodeSignature\\CodeResources"));
+			var modifiedAfterSignature = signedAppBundleFilesWithInfo.Where (v => v.Info.LastWriteTimeUtc > codesignInfo.Info.LastWriteTimeUtc);
+			if (modifiedAfterSignature.Any ()) {
+				Console.WriteLine ($"{modifiedAfterSignature.Count ()} files were modified after the app was signed. Full list:");
+				foreach (var fileWithInfo in signedAppBundleFilesWithInfo) {
+					Console.WriteLine ($"    {fileWithInfo.Info.LastWriteTimeUtc.ToString ("O")} {(fileWithInfo.Info.LastWriteTimeUtc > codesignInfo.Info.LastWriteTimeUtc ? "MODIFIED " : "unchanged")} {fileWithInfo.Name}");
+				}
+				Assert.That (modifiedAfterSignature, Is.Empty, "Files modified after the app was signed");
+			}
 		}
 
 		static void AddOrAssert (IList<string> list, string item)
@@ -150,6 +168,152 @@ namespace Xamarin.Tests {
 			foreach (var entry in files.OrderBy (v => v))
 				Console.WriteLine ($"    {entry}");
 #endif
+		}
+
+		[Category ("RemoteWindows")]
+		[TestCase (ApplePlatform.iOS, "ios-arm64", BundleStructureTest.CodeSignature.All, "Debug")]
+		public void BundleStructureWithRemoteMac (ApplePlatform platform, string runtimeIdentifiers, BundleStructureTest.CodeSignature signature, string configuration)
+		{
+			var project = "BundleStructure";
+			Configuration.IgnoreIfIgnoredPlatform (platform);
+			Configuration.AssertRuntimeIdentifiersAvailable (platform, runtimeIdentifiers);
+			Configuration.IgnoreIfNotOnWindows ();
+
+			var project_path = GetProjectPath (project, runtimeIdentifiers: runtimeIdentifiers, platform: platform, out var appPath, configuration: configuration);
+			var project_dir = Path.GetDirectoryName (Path.GetDirectoryName (project_path))!;
+			Clean (project_path);
+
+			var properties = GetDefaultProperties (runtimeIdentifiers);
+			properties ["_IsAppSigned"] = signature != BundleStructureTest.CodeSignature.None ? "true" : "false";
+			if (!string.IsNullOrWhiteSpace (configuration))
+				properties ["Configuration"] = configuration;
+			AddRemoteProperties (properties);
+
+			// Copy the app bundle to Windows so that we can inspect the results.
+			properties ["CopyAppBundleToWindows"] = "true";
+
+			var rv = DotNet.AssertBuild (project_path, properties);
+			var warnings = BinLog.GetBuildLogWarnings (rv.BinLogPath).ToArray ();
+			var warningMessages = BundleStructureTest.FilterWarnings (warnings, canonicalizePaths: true);
+
+			var isReleaseBuild = string.Equals (configuration, "Release", StringComparison.OrdinalIgnoreCase);
+			var platformString = platform.AsString ();
+			var tfm = platform.ToFramework ();
+			var testsDirectory = Path.GetDirectoryName (Path.GetDirectoryName (project_dir))!;
+			var expectedWarnings = new List<string> {
+				$"The 'PublishFolderType' metadata value 'Unknown' on the item '{Path.Combine (project_dir, platformString, "SomewhatUnknownI.bin")}' is not recognized. The file will not be copied to the app bundle. If the file is not supposed to be copied to the app bundle, remove the 'CopyToOutputDirectory' metadata on the item.",
+				$"The 'PublishFolderType' metadata value 'Unknown' on the item '{Path.Combine (project_dir, platformString, "UnknownI.bin")}' is not recognized. The file will not be copied to the app bundle. If the file is not supposed to be copied to the app bundle, remove the 'CopyToOutputDirectory' metadata on the item.",
+				$"The file '{Path.Combine (project_dir, platformString, "NoneA.txt")}' does not specify a 'PublishFolderType' metadata, and a default value could not be calculated. The file will not be copied to the app bundle.",
+				$"The file '{Path.Combine (project_dir, platformString, "NoneI.txt")}' does not specify a 'PublishFolderType' metadata, and a default value could not be calculated. The file will not be copied to the app bundle.",
+				$"The file '{Path.Combine (project_dir, platformString, "NoneJ.txt")}' does not specify a 'PublishFolderType' metadata, and a default value could not be calculated. The file will not be copied to the app bundle.",
+				$"The file '{Path.Combine (project_dir, platformString, "NoneK.txt")}' does not specify a 'PublishFolderType' metadata, and a default value could not be calculated. The file will not be copied to the app bundle.",
+				$"The file '{Path.Combine (project_dir, platformString, "NoneM.unknown")}' does not specify a 'PublishFolderType' metadata, and a default value could not be calculated. The file will not be copied to the app bundle.",
+				$"The file '{Path.Combine (project_dir, platformString, "Sub", "NoneG.txt")}' does not specify a 'PublishFolderType' metadata, and a default value could not be calculated. The file will not be copied to the app bundle.",
+				$"The file '{Path.Combine (project_dir, "NoneH.txt")}' does not specify a 'PublishFolderType' metadata, and a default value could not be calculated. The file will not be copied to the app bundle.",
+				$"The file '{Path.Combine (project_dir, "NoneO.xml")}' does not specify a 'PublishFolderType' metadata, and a default value could not be calculated. The file will not be copied to the app bundle.",
+			};
+
+			var rids = runtimeIdentifiers.Split (';');
+			if (rids.Length > 1) {
+				// All warnings show up twice if we're building for multiple architectures
+				expectedWarnings.AddRange (expectedWarnings);
+			}
+
+			var zippedFrameworks = platform == ApplePlatform.MacCatalyst || platform == ApplePlatform.MacOSX;
+			foreach (var rid in rids) {
+				if (zippedFrameworks) {
+					expectedWarnings.Add ($"The framework {Path.Combine ("obj", configuration, tfm, rid, "bindings-xcframework-test.resources.zip", "XStaticObjectTest.framework")} is a framework of static libraries, and will not be copied to the app.");
+					expectedWarnings.Add ($"The framework {Path.Combine ("obj", configuration, tfm, rid, "bindings-xcframework-test.resources.zip", "XStaticArTest.framework")} is a framework of static libraries, and will not be copied to the app.");
+				} else {
+					expectedWarnings.Add ($"The framework {Path.Combine (testsDirectory, "bindings-xcframework-test", "dotnet", platformString, "bin", configuration, tfm, "bindings-framework-test.resources", "XStaticObjectTest.xcframework", runtimeIdentifiers, "XStaticObjectTest.framework")} is a framework of static libraries, and will not be copied to the app.");
+					expectedWarnings.Add ($"The framework {Path.Combine (testsDirectory, "bindings-xcframework-test", "dotnet", platformString, "bin", configuration, tfm, "bindings-framework-test.resources", "XStaticArTest.xcframework", runtimeIdentifiers, "XStaticArTest.framework")} is a framework of static libraries, and will not be copied to the app.");
+				}
+			}
+
+			if (signature == BundleStructureTest.CodeSignature.None && (platform == ApplePlatform.MacCatalyst || platform == ApplePlatform.MacOSX)) {
+				expectedWarnings.Add ($"Found files in the root directory of the app bundle. This will likely cause codesign to fail. Files:\n{Path.Combine ("bin", configuration, tfm, runtimeIdentifiers.IndexOf (';') >= 0 ? string.Empty : runtimeIdentifiers, "BundleStructure.app", "UnknownJ.bin")}");
+			}
+
+			// Sort the messages so that comparison against the expected array is faster
+			expectedWarnings = expectedWarnings
+				.Select (v => v.Replace (Path.DirectorySeparatorChar, '/')) // warnings we get are from macOS, so make sure we expect macOS-style paths.
+				.OrderBy (v => v)
+				.ToList ();
+
+			var appExecutable = GetNativeExecutable (platform, appPath);
+
+			var objDir = GetObjDir (project_path, platform, runtimeIdentifiers, configuration);
+			var zippedAppBundlePath = Path.Combine (objDir, "AppBundle.zip");
+			Assert.That (zippedAppBundlePath, Does.Exist, "AppBundle.zip");
+
+			BundleStructureTest.CheckZippedAppBundleContents (platform, zippedAppBundlePath, rids, signature, isReleaseBuild);
+			AssertWarningsEqual (expectedWarnings, warningMessages, "Warnings");
+			ExecuteWithMagicWordAndAssert (platform, runtimeIdentifiers, appExecutable);
+
+			// touch AppDelegate.cs, and rebuild should succeed and do the right thing
+			var appDelegatePath = Path.Combine (project_dir, "AppDelegate.cs");
+			Configuration.Touch (appDelegatePath);
+
+			rv = DotNet.AssertBuild (project_path, properties);
+			warnings = BinLog.GetBuildLogWarnings (rv.BinLogPath).ToArray ();
+			warningMessages = BundleStructureTest.FilterWarnings (warnings, canonicalizePaths: true);
+
+			BundleStructureTest.CheckZippedAppBundleContents (platform, zippedAppBundlePath, rids, signature, isReleaseBuild);
+			AssertWarningsEqual (expectedWarnings, warningMessages, "Warnings Rebuild 1");
+			ExecuteWithMagicWordAndAssert (platform, runtimeIdentifiers, appExecutable);
+
+			// remove the bin directory, and rebuild should succeed and do the right thing
+			var binDirectory = Path.Combine (Path.GetDirectoryName (project_path)!, "bin");
+			Directory.Delete (binDirectory, true);
+
+			rv = DotNet.AssertBuild (project_path, properties);
+			warnings = BinLog.GetBuildLogWarnings (rv.BinLogPath).ToArray ();
+			warningMessages = BundleStructureTest.FilterWarnings (warnings, canonicalizePaths: true);
+
+			BundleStructureTest.CheckZippedAppBundleContents (platform, zippedAppBundlePath, rids, signature, isReleaseBuild);
+			AssertWarningsEqual (expectedWarnings, warningMessages, "Warnings Rebuild 2");
+			ExecuteWithMagicWordAndAssert (platform, runtimeIdentifiers, appExecutable);
+
+			// a simple rebuild should succeed
+			rv = DotNet.AssertBuild (project_path, properties);
+			warnings = BinLog.GetBuildLogWarnings (rv.BinLogPath).ToArray ();
+			warningMessages = BundleStructureTest.FilterWarnings (warnings, canonicalizePaths: true);
+
+			BundleStructureTest.CheckZippedAppBundleContents (platform, zippedAppBundlePath, rids, signature, isReleaseBuild);
+			AssertWarningsEqual (expectedWarnings, warningMessages, "Warnings Rebuild 3");
+			ExecuteWithMagicWordAndAssert (platform, runtimeIdentifiers, appExecutable);
+		}
+
+		static void AssertWarningsEqual (IList<string> expected, IList<string> actual, string message)
+		{
+			if (expected.Count == actual.Count) {
+				var equal = true;
+				for (var i = 0; i < actual.Count; i++) {
+					if (expected [i] != actual [i]) {
+						equal = false;
+						break;
+					}
+				}
+				if (equal)
+					return;
+			}
+
+			var sb = new StringBuilder ();
+			sb.AppendLine ($"Incorrect warnings: {message}");
+			sb.AppendLine ($"Expected {expected.Count} warnings:");
+			for (var i = 0; i < expected.Count; i++)
+				sb.AppendLine ($"\t#{i + 1}: {expected [i]}");
+			sb.AppendLine ($"Got {actual.Count} warnings:");
+			for (var i = 0; i < actual.Count; i++) {
+				if (i < expected.Count && actual [i] == expected [i]) {
+					sb.AppendLine ($"\t#{i + 1}: {actual [i]}");
+				} else {
+					sb.AppendLine ($"\t!{i + 1}: {actual [i]}");
+				}
+			}
+
+			Console.WriteLine (sb);
+			Assert.Fail (sb.ToString ());
 		}
 
 		[Category ("RemoteWindows")]
@@ -182,7 +346,7 @@ namespace Xamarin.Tests {
 
 			// Open the zipped app bundle and get the Info.plist
 			using var zip = ZipFile.OpenRead (zippedAppBundlePath);
-			DumpZipFile (zip, zippedAppBundlePath);
+			ZipHelpers.DumpZipFile (zip, zippedAppBundlePath);
 			var infoPlistEntry = zip.Entries.SingleOrDefault (v => v.Name == "Info.plist")!;
 			Assert.NotNull (infoPlistEntry, "Info.plist");
 
@@ -200,22 +364,14 @@ namespace Xamarin.Tests {
 			Assert.AreEqual ("3.14", infoPlist.GetString ("CFBundleShortVersionString").Value, "CFBundleShortVersionString");
 		}
 
-		void DumpZipFile (ZipArchive zip, string path)
-		{
-#if TRACE
-			var entries = zip.Entries;
-			Console.WriteLine ($"Viewing zip archive {path} with {entries.Count} entries:");
-			foreach (var entry in entries) {
-				Console.WriteLine ($"    FullName: {entry.FullName} Name: {entry.Name} Length: {entry.Length} CompressedLength: {entry.CompressedLength} ExternalAttributes: 0x{entry.ExternalAttributes:X}");
-			}
-#endif
-		}
-
 		protected void AddRemoteProperties (Dictionary<string, string> properties)
 		{
 			properties ["ServerAddress"] = Environment.GetEnvironmentVariable ("MAC_AGENT_IP") ?? string.Empty;
 			properties ["ServerUser"] = Environment.GetEnvironmentVariable ("MAC_AGENT_USER") ?? string.Empty;
 			properties ["ServerPassword"] = Environment.GetEnvironmentVariable ("XMA_PASSWORD") ?? string.Empty;
+
+			if (!string.IsNullOrEmpty (properties ["ServerUser"]))
+				properties ["EnsureRemoteConnection"] = "true";
 		}
 	}
 }

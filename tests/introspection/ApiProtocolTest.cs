@@ -72,6 +72,11 @@ namespace Introspection {
 			case "CIFilterGenerator":
 				// only present on device :/
 				return TestRuntime.IsSimulatorOrDesktop;
+#if !XAMCORE_5_0
+			case "GKHybridStrategist":
+				// We removed the bindings for this type.
+				return true;
+#endif
 			default:
 				return SkipDueToAttribute (type);
 			}
@@ -188,6 +193,7 @@ namespace Introspection {
 				case "GKPlayer":
 				case "PKDisbursementRequest":
 				case "PKContact":
+				case "TKSmartCardPinFormat":
 					return true;
 				}
 				break;
@@ -360,6 +366,11 @@ namespace Introspection {
 				case "MKPolygonRenderer":
 				case "MKPolylineRenderer":
 				case "AVAudioPcmBuffer":
+				case "TKSmartCardPinFormat":
+				case "TKSmartCardUserInteraction":
+				case "TKSmartCardUserInteractionForPinOperation":
+				case "TKSmartCardUserInteractionForSecurePinChange":
+				case "TKSmartCardUserInteractionForSecurePinVerification":
 					return true;
 				}
 				break;
@@ -529,6 +540,11 @@ namespace Introspection {
 				case "MKPolygonRenderer":
 				case "MKPolylineRenderer":
 				case "AVAudioPcmBuffer":
+				case "TKSmartCardPinFormat":
+				case "TKSmartCardUserInteraction":
+				case "TKSmartCardUserInteractionForPinOperation":
+				case "TKSmartCardUserInteractionForSecurePinChange":
+				case "TKSmartCardUserInteractionForSecurePinVerification":
 					return true;
 				}
 				break;
