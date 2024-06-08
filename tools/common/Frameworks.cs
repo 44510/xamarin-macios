@@ -281,6 +281,7 @@ public class Frameworks : Dictionary<string, Framework> {
 					{ "BackgroundAssets", "BackgroundAssets", 13,0},
 					{ "HealthKit", "HealthKit", 13,0 },
 					{ "MetalFX", "MetalFX", 13, 0 },
+					{ "SafetyKit", "SafetyKit", 13, 0 },
 					{ "SharedWithYou", "SharedWithYou", 13,0 },
 					{ "SharedWithYouCore", "SharedWithYouCore", 13, 0 },
 					{ "ExtensionKit", "ExtensionKit", 13,0 },
@@ -426,6 +427,7 @@ public class Frameworks : Dictionary<string, Framework> {
 
 				{ "BackgroundTasks", "BackgroundTasks", 13, 0 },
 				{ "CoreHaptics", "CoreHaptics", 13, 0 },
+				{ "CryptoTokenKit", "CryptoTokenKit", 13, 0 },
 				{ "LinkPresentation", "LinkPresentation", 13, 0 },
 				{ "MetricKit", "MetricKit", 13, 0 },
 				{ "PencilKit", "PencilKit", 13, 0 },
@@ -461,8 +463,10 @@ public class Frameworks : Dictionary<string, Framework> {
 
 				{ "AVRouting", "AVRouting", 16,0},
 				{ "BackgroundAssets", "BackgroundAssets", 16,0},
+				{ "DeviceDiscoveryExtension", "DeviceDiscoveryExtension", 16, 0},
 				{ "MetalFX", "MetalFX", new Version (16,0), NotAvailableInSimulator },
 				{ "PushToTalk", "PushToTalk", new Version (16,0), new Version (16, 2) /* available to build with, although it's unusable */},
+				{ "SafetyKit", "SafetyKit", 16, 0 },
 				{ "SharedWithYou", "SharedWithYou", 16, 0 },
 				{ "SharedWithYouCore", "SharedWithYouCore", 16, 0 },
 
@@ -541,6 +545,7 @@ public class Frameworks : Dictionary<string, Framework> {
 				{ "Chip", "CHIP", new Version (8, 0), NotAvailableInSimulator /* no headers in beta 2 */ },
 #endif
 				{ "CoreMidi", "CoreMIDI", 8,0 },
+				{ "CryptoTokenKit", "CryptoTokenKit", 8, 0 },
 				{ "NearbyInteraction", "NearbyInteraction", 8,0 },
 				{ "OSLog", "OSLog", 8,0 },
 				{ "ShazamKit", "ShazamKit", new Version (8, 0), NotAvailableInSimulator},
@@ -548,6 +553,7 @@ public class Frameworks : Dictionary<string, Framework> {
 				{ "DeviceCheck", "DeviceCheck", 9,0 },
 				{ "CallKit", "CallKit", 9,0 },
 				{ "LocalAuthentication", "LocalAuthentication", 9,0 },
+				{ "SafetyKit", "SafetyKit", 9, 0 },
 
 				{ "Symbols", "Symbols", 10, 0 },
 			};
@@ -628,6 +634,7 @@ public class Frameworks : Dictionary<string, Framework> {
 					{ "TVUIKit", "TVUIKit", 12,0 },
 
 					{ "AuthenticationServices", "AuthenticationServices", 13,0 },
+					{ "CryptoTokenKit", "CryptoTokenKit", 13, 0 },
 					{ "SoundAnalysis", "SoundAnalysis", 13,0 },
 					{ "BackgroundTasks", "BackgroundTasks", 13, 0 },
 
@@ -643,6 +650,7 @@ public class Frameworks : Dictionary<string, Framework> {
 #if !NET
 					{ "Chip", "CHIP", new Version (15, 0), NotAvailableInSimulator /* no headers in beta 2 */ },
 #endif
+					{ "DeviceDiscoveryUI", "DeviceDiscoveryUI", 16,0 },
 					{ "OSLog", "OSLog", 15,0 },
 					{ "CoreMidi", "CoreMIDI", 15,0 },
 					{ "ShazamKit", "ShazamKit", new Version (15, 0), NotAvailableInSimulator},
@@ -652,7 +660,7 @@ public class Frameworks : Dictionary<string, Framework> {
 					{ "Cinematic", "Cinematic", new Version (17, 0), NotAvailableInSimulator },
 					{ "Symbols", "Symbols", 17, 0 },
 					{ "NetworkExtension", "NetworkExtension", 17, 0 },
-		  { "Phase", "PHASE", new Version (17,0), NotAvailableInSimulator },
+					{ "Phase", "PHASE", new Version (17,0), NotAvailableInSimulator },
 				};
 			}
 			return tvos_frameworks;
@@ -690,6 +698,7 @@ public class Frameworks : Dictionary<string, Framework> {
 					f.Version = v16_1;
 					break;
 				// These frameworks are not available on Mac Catalyst
+				case "DeviceDiscoveryExtension":
 				case "OpenGLES":
 				case "NewsstandKit":
 				case "MediaSetup":

@@ -327,23 +327,28 @@ namespace Xamarin.Tests {
 			return csproj;
 		}
 
-		protected string ExecuteWithMagicWordAndAssert (ApplePlatform platform, string runtimeIdentifiers, string executable)
+		protected string ExecuteWithMagicWordAndAssert (ApplePlatform platform, string runtimeIdentifiers, string executable, Dictionary<string, string?>? environment = null)
 		{
 			if (!CanExecute (platform, runtimeIdentifiers))
 				return string.Empty;
 
-			return ExecuteWithMagicWordAndAssert (executable);
+			return ExecuteWithMagicWordAndAssert (executable, environment);
 		}
 
-		protected string ExecuteWithMagicWordAndAssert (string executable)
+		protected string ExecuteWithMagicWordAndAssert (string executable, Dictionary<string, string?>? environment = null)
 		{
-			var rv = Execute (executable, out var output, out string magicWord);
+			if (Environment.OSVersion.Platform == PlatformID.Win32NT) {
+				Console.WriteLine ($"Not executing '{executable}' because we're on Windows.");
+				return string.Empty;
+			}
+
+			var rv = Execute (executable, out var output, out string magicWord, environment);
 			Assert.That (output.ToString (), Does.Contain (magicWord), "Contains magic word");
 			Assert.AreEqual (0, rv.ExitCode, "ExitCode");
 			return output.ToString ();
 		}
 
-		protected Execution Execute (string executable, out StringBuilder output, out string magicWord)
+		protected Execution Execute (string executable, out StringBuilder output, out string magicWord, Dictionary<string, string?>? environment = null)
 		{
 			if (!File.Exists (executable))
 				throw new FileNotFoundException ($"The executable '{executable}' does not exists.");
@@ -353,6 +358,10 @@ namespace Xamarin.Tests {
 				{ "MAGIC_WORD", magicWord },
 				{ "DYLD_FALLBACK_LIBRARY_PATH", null }, // VSMac might set this, which may cause tests to crash.
 			};
+			if (environment is not null) {
+				foreach (var kvp in environment)
+					env [kvp.Key] = kvp.Value;
+			}
 
 			output = new StringBuilder ();
 			return Execution.RunWithStringBuildersAsync (executable, Array.Empty<string> (), environment: env, standardOutput: output, standardError: output, timeout: TimeSpan.FromSeconds (15)).Result;
@@ -441,8 +450,12 @@ namespace Xamarin.Tests {
 
 			var failures = new List<string> ();
 			for (var i = 0; i < expectedMessages.Length; i++) {
-				if (actualMessages [i].Message != expectedMessages [i]) {
-					failures.Add ($"\tUnexpected {type} message #{i}:\n\t\tExpected: {expectedMessages [i]}\n\t\tActual: {actualMessages [i].Message?.TrimEnd ()}");
+				var actual = (actualMessages [i].Message ?? string.Empty).Trim ('\n', '\r', ' ');
+				var expected = expectedMessages [i].Trim ('\n', '\r', ' ');
+				if (actual != expected) {
+					actual = actual.Replace ("\n", "\\n").Replace ("\r", "\\r");
+					expected = expected.Replace ("\n", "\\n").Replace ("\r", "\\r");
+					failures.Add ($"\tUnexpected {type} message #{i}:\n\t\tExpected: {expected}\n\t\tActual:   {actual}");
 				}
 			}
 			if (!failures.Any ())
@@ -463,6 +476,29 @@ namespace Xamarin.Tests {
 			var output = BinLog.PrintToString (result.BinLogPath);
 			Assert.That (output, Does.Not.Contain ("Building target \"_RunILLink\" completely."), "Linker did not executed as expected.");
 			Assert.That (output, Does.Not.Contain ("LinkerConfiguration:"), "Custom steps did not run as expected.");
+		}
+
+		static bool? is_in_ci;
+		public static bool IsInCI {
+			get {
+				if (!is_in_ci.HasValue) {
+					var in_ci = !string.IsNullOrEmpty (Environment.GetEnvironmentVariable ("BUILD_REVISION"));
+					in_ci |= !string.IsNullOrEmpty (Environment.GetEnvironmentVariable ("BUILD_SOURCEVERSION")); // set by Azure DevOps
+					is_in_ci = in_ci;
+				}
+				return is_in_ci.Value;
+			}
+		}
+
+		static bool? is_pull_request;
+		public static bool IsPullRequest {
+			get {
+				if (!is_pull_request.HasValue) {
+					var pr = string.Equals (Environment.GetEnvironmentVariable ("BUILD_REASON"), "PullRequest", StringComparison.Ordinal);
+					is_pull_request = pr;
+				}
+				return is_pull_request.Value;
+			}
 		}
 
 	}

@@ -319,12 +319,12 @@ namespace Xamarin.Tests {
 
 			var t = assembly.MainModule.Types.First ((v) => v.FullName == typename);
 			var actual = t.Methods.Where ((v) => {
-				if (v.IsPrivate || v.IsFamily || v.IsFamilyAndAssembly)
+				if (v.IsPrivate || v.IsAssembly || v.IsFamilyAndAssembly)
 					return false;
 				return true;
 			});
 			if (actual.Count () != count) {
-				Assert.Fail ($"Expected {count} publicly accessible method(s) in {typename}, found {actual} publicly accessible method(s): {message}\n\t{string.Join ("\n\t", actual.Select (v => v.FullName).OrderBy (v => v))}");
+				Assert.Fail ($"Expected {count} publicly accessible method(s) in {typename}, found {actual.Count ()} publicly accessible method(s): {message}\n\t{string.Join ("\n\t", actual.Select (v => v.FullName).OrderBy (v => v))}");
 			}
 		}
 
@@ -403,9 +403,22 @@ namespace Xamarin.Tests {
 				resolver.AddSearchDirectory (searchdir);
 				parameters.AssemblyResolver = resolver;
 				var tmpDirectory = EnsureTempDir ();
-				assembly = AssemblyDefinition.ReadAssembly (Out ?? (Path.Combine (tmpDirectory, Path.GetFileNameWithoutExtension (ApiDefinitions [0]).Replace ('-', '_') + ".dll")), parameters);
+				assembly = AssemblyDefinition.ReadAssembly (AssemblyPath, parameters);
 			}
 			return assembly;
+		}
+
+		public string AssemblyPath {
+			get {
+				var tmpDirectory = EnsureTempDir ();
+				return Out ?? (Path.Combine (tmpDirectory, Path.GetFileNameWithoutExtension (ApiDefinitions [0]).Replace ('-', '_') + ".dll"));
+			}
+		}
+
+		public string XmlDocumentation {
+			get {
+				return Path.ChangeExtension (AssemblyPath, ".xml");
+			}
 		}
 
 		string EnsureTempDir ()
@@ -440,6 +453,8 @@ namespace Xamarin.Tests {
 				return new string [] { "IOS", "XAMCORE_2_0" };
 			case Profile.MacCatalyst:
 				return new string [] { "MACCATALYST" };
+			case Profile.tvOS:
+				return new string [] { "TVOS", "XAMCORE_2_0" };
 			default:
 				throw new NotImplementedException (profile.ToString ());
 			}

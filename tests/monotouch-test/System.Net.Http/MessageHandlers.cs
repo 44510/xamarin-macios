@@ -758,5 +758,130 @@ namespace MonoTests.System.Net.Http {
 				Assert.AreEqual (HttpStatusCode.Unauthorized, httpStatus, "Second status not ok");
 			}
 		}
+
+		class TestDelegateHandler : DelegatingHandler {
+			public int Iterations;
+			public HttpResponseMessage [] Responses;
+
+			public TestDelegateHandler (int iterations)
+			{
+				Responses = new HttpResponseMessage [iterations];
+				Iterations = iterations;
+			}
+
+			public bool IsCompleted (int iteration)
+			{
+				return Responses [iteration] is not null;
+			}
+
+			protected override async Task<HttpResponseMessage> SendAsync (HttpRequestMessage request, CancellationToken cancellationToken)
+			{
+				// test that we can perform a retry with the same request
+				for (var i = 0; i < Iterations; i++)
+					Responses [i] = await base.SendAsync (request, cancellationToken);
+				return Responses.Last ();
+			}
+		}
+
+		[TestCase]
+		public void GHIssue16339 ()
+		{
+			// test that we can perform two diff requests with the same managed HttpRequestMessage
+			var json = "{this:\"\", is:\"a\", test:2}";
+			var iterations = 2;
+			var bodies = new string [iterations];
+
+			var request = new HttpRequestMessage {
+				Method = HttpMethod.Post,
+				RequestUri = new (NetworkResources.Httpbin.PostUrl),
+				Content = new StringContent (json, Encoding.UTF8, "application/json")
+			};
+
+			using var delegatingHandler = new TestDelegateHandler (iterations) {
+				InnerHandler = new NSUrlSessionHandler (),
+			};
+
+			var done = TestRuntime.TryRunAsync (TimeSpan.FromSeconds (30), async () => {
+				using var client = new HttpClient (delegatingHandler);
+				var _ = await client.SendAsync (request);
+				for (var i = 0; i < iterations; i++) {
+					if (delegatingHandler.IsCompleted (i))
+						bodies [i] = await delegatingHandler.Responses [i].Content.ReadAsStringAsync ();
+				}
+			}, out var ex);
+
+			if (!done) { // timeouts happen in the bots due to dns issues, connection issues etc.. we do not want to fail
+				Assert.Inconclusive ("Request timedout.");
+			} else {
+				Assert.IsNull (ex, "Exception");
+
+				for (var i = 0; i < iterations; i++) {
+					var rsp = delegatingHandler.Responses [i];
+					TestRuntime.IgnoreInCIIfBadNetwork (rsp.StatusCode);
+					Assert.IsTrue (delegatingHandler.IsCompleted (i), $"Completed #{i}");
+					Assert.AreEqual ("OK", rsp.ReasonPhrase, $"ReasonPhrase #{i}");
+					Assert.AreEqual (HttpStatusCode.OK, rsp.StatusCode, $"StatusCode #{i}");
+
+					var body = bodies [i];
+					// Poor-man's json parser
+					var data = body.Split ('\n', '\r').Single (v => v.Contains ("\"data\": \""));
+					data = data.Trim ().Replace ("\"data\": \"", "").TrimEnd ('"', ',');
+					data = data.Replace ("\\\"", "\"");
+
+					Assert.AreEqual (json, data, $"Post data #{i}");
+				}
+			}
+		}
+
+#if NET
+		[TestCase (typeof (NSUrlSessionHandler))]
+		[TestCase (typeof (SocketsHttpHandler))]
+		public void UpdateRequestUriAfterRedirect (Type handlerType)
+		{
+			// https://github.com/xamarin/xamarin-macios/issues/20629
+
+			var done = TestRuntime.TryRunAsync (TimeSpan.FromSeconds (30), async () => {
+				var client = new HttpClient (GetHandler (handlerType));
+				var postRequestUri = NetworkResources.Httpbin.Url + "/";
+				var initialRequestUri = NetworkResources.Httpbin.GetRedirectToUrl (postRequestUri);
+				var request = new HttpRequestMessage (HttpMethod.Get, initialRequestUri);
+				Assert.AreEqual (initialRequestUri, request.RequestUri.ToString (), "Initial RequestUri");
+				var response = await client.SendAsync (request);
+				TestRuntime.IgnoreInCIIfBadNetwork (response.StatusCode);
+				Assert.AreEqual (postRequestUri, request.RequestUri.ToString (), "Post RequestUri");
+			}, out var ex);
+
+			if (!done) { // timeouts happen in the bots due to dns issues, connection issues etc. we do not want to fail
+				Assert.Inconclusive ("Request timedout.");
+			} else {
+				TestRuntime.IgnoreInCIIfBadNetwork (ex);
+				Assert.IsNull (ex, "Exception");
+			}
+		}
+
+		[TestCase (typeof (NSUrlSessionHandler))]
+		[TestCase (typeof (SocketsHttpHandler))]
+		public void RequestUriNotUpdatedIfNotRedirect (Type handlerType)
+		{
+			// https://github.com/xamarin/xamarin-macios/issues/20629
+
+			var done = TestRuntime.TryRunAsync (TimeSpan.FromSeconds (30), async () => {
+				var client = new HttpClient (GetHandler (handlerType));
+				var requestUri = NetworkResources.Httpbin.Uri + "?stuffHere=[]{}";
+				var request = new HttpRequestMessage (HttpMethod.Get, requestUri);
+				Assert.AreEqual (requestUri, request.RequestUri.ToString (), "Initial RequestUri");
+				var response = await client.SendAsync (request);
+				TestRuntime.IgnoreInCIIfBadNetwork (response.StatusCode);
+				Assert.AreEqual (requestUri, request.RequestUri.ToString (), "Post RequestUri");
+			}, out var ex);
+
+			if (!done) { // timeouts happen in the bots due to dns issues, connection issues etc. we do not want to fail
+				Assert.Inconclusive ("Request timedout.");
+			} else {
+				TestRuntime.IgnoreInCIIfBadNetwork (ex);
+				Assert.IsNull (ex, "Exception");
+			}
+		}
+#endif // NET
 	}
 }
