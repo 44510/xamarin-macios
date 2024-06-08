@@ -153,28 +153,41 @@ namespace Xharness {
 			}
 		}
 
+		bool TryGetMlaunchDotnetPath (out string value)
+		{
+			value = null;
+
+			if (!ENABLE_DOTNET)
+				return false;
+
+			ApplePlatform platform;
+			if (INCLUDE_IOS) {
+				platform = ApplePlatform.iOS;
+			} else if (INCLUDE_TVOS) {
+				platform = ApplePlatform.TVOS;
+			} else {
+				return false;
+			}
+
+			var sdkPlatform = platform.AsString ().ToUpperInvariant ();
+			var sdkName = GetVariable ($"{sdkPlatform}_NUGET_SDK_NAME");
+			// there is a diff between getting the path for the current platform when running on CI or off CI. The config files in the CI do not 
+			// contain the correct workload version, the reason for this is that the workload is built in a different machine which means that
+			// the Make.config will use the wrong version. The CI set the version in the environment variable {platform}_WORKLOAD_VERSION via a script.
+			var workloadVersion = GetVariable ($"{sdkPlatform}_WORKLOAD_VERSION");
+			var sdkVersion = GetVariable ($"{sdkPlatform}_NUGET_VERSION_NO_METADATA");
+			value = Path.Combine (DOTNET_DIR, "packs", sdkName, string.IsNullOrEmpty (workloadVersion) ? sdkVersion : workloadVersion, "tools", "bin", "mlaunch");
+			return true;
+		}
+
 		string MlaunchPath {
 			get {
-				if (ENABLE_DOTNET) {
-					ApplePlatform platform;
-					if (INCLUDE_IOS) {
-						platform = ApplePlatform.iOS;
-					} else if (INCLUDE_TVOS) {
-						platform = ApplePlatform.TVOS;
-					} else {
-						return $"Not building any mobile platform, so can't provide a location to mlaunch.";
-					}
-					var sdkPlatform = platform.AsString ().ToUpperInvariant ();
-					var sdkName = GetVariable ($"{sdkPlatform}_NUGET_SDK_NAME");
-					// there is a diff between getting the path for the current platform when running on CI or off CI. The config files in the CI do not 
-					// contain the correct workload version, the reason for this is that the workload is built in a different machine which means that
-					// the Make.config will use the wrong version. The CI set the version in the environment variable {platform}_WORKLOAD_VERSION via a script.
-					var workloadVersion = GetVariable ($"{sdkPlatform}_WORKLOAD_VERSION");
-					var sdkVersion = GetVariable ($"{sdkPlatform}_NUGET_VERSION_NO_METADATA");
-					return Path.Combine (DOTNET_DIR, "packs", sdkName, string.IsNullOrEmpty (workloadVersion) ? sdkVersion : workloadVersion, "tools", "bin", "mlaunch");
-				} else if (INCLUDE_XAMARIN_LEGACY && INCLUDE_IOS) {
+				if (TryGetMlaunchDotnetPath (out var mlaunch))
+					return mlaunch;
+
+				if (INCLUDE_XAMARIN_LEGACY && (INCLUDE_IOS || INCLUDE_TVOS || INCLUDE_WATCH))
 					return Path.Combine (IOS_DESTDIR, "Library", "Frameworks", "Xamarin.iOS.framework", "Versions", "Current", "bin", "mlaunch");
-				}
+
 				return $"Not building any mobile platform, so can't provide a location to mlaunch.";
 			}
 		}
@@ -373,6 +386,17 @@ namespace Xharness {
 				new { Label = TestLabel.Xcframework, ProjectPath = "xcframework-test", IsFSharp = false, Configurations = noConfigurations, },
 			};
 
+			var iOSSkip = new TestLabel [] {
+				TestLabel.Framework,
+			};
+			var tvOSSkip = new TestLabel [] {
+				TestLabel.Framework,
+			};
+			var macOSSkip = new TestLabel [] {
+			};
+			var macCatalystSkip = new TestLabel [] {
+			};
+
 			// If .NET is not enabled, then ignore, otherwise leave undecided for other code to determine.
 			bool? dotnetIgnored = ENABLE_DOTNET ? null : (bool?) true;
 			foreach (var projectInfo in projects) {
@@ -380,52 +404,60 @@ namespace Xharness {
 				var projectName = Path.GetFileName (projectPath);
 				var projExtension = projectInfo.IsFSharp ? ".fsproj" : ".csproj";
 
-				IOSTestProjects.Add (new iOSTestProject (projectInfo.Label, Path.GetFullPath (Path.Combine (RootDirectory, projectPath, "dotnet", "iOS", projectName + projExtension))) {
-					Name = projectName,
-					IsDotNetProject = true,
-					SkipiOSVariation = false,
-					SkiptvOSVariation = true,
-					SkipwatchOSVariation = true,
-					SkipTodayExtensionVariation = true,
-					SkipDeviceVariations = false,
-					TestPlatform = TestPlatform.iOS_Unified,
-					Ignore = dotnetIgnored,
-					Configurations = projectInfo.Configurations,
-				});
+				if (!iOSSkip.Contains (projectInfo.Label)) {
+					IOSTestProjects.Add (new iOSTestProject (projectInfo.Label, Path.GetFullPath (Path.Combine (RootDirectory, projectPath, "dotnet", "iOS", projectName + projExtension))) {
+						Name = projectName,
+						IsDotNetProject = true,
+						SkipiOSVariation = false,
+						SkiptvOSVariation = true,
+						SkipwatchOSVariation = true,
+						SkipTodayExtensionVariation = true,
+						SkipDeviceVariations = false,
+						TestPlatform = TestPlatform.iOS_Unified,
+						Ignore = dotnetIgnored,
+						Configurations = projectInfo.Configurations,
+					});
+				}
 
-				IOSTestProjects.Add (new iOSTestProject (projectInfo.Label, Path.GetFullPath (Path.Combine (RootDirectory, projectPath, "dotnet", "tvOS", projectName + projExtension))) {
-					Name = projectName,
-					IsDotNetProject = true,
-					SkipiOSVariation = true,
-					SkiptvOSVariation = true,
-					SkipwatchOSVariation = true,
-					SkipTodayExtensionVariation = true,
-					SkipDeviceVariations = false,
-					GenerateVariations = false,
-					TestPlatform = TestPlatform.tvOS,
-					Ignore = dotnetIgnored,
-					Configurations = projectInfo.Configurations,
-				});
+				if (!tvOSSkip.Contains (projectInfo.Label)) {
+					IOSTestProjects.Add (new iOSTestProject (projectInfo.Label, Path.GetFullPath (Path.Combine (RootDirectory, projectPath, "dotnet", "tvOS", projectName + projExtension))) {
+						Name = projectName,
+						IsDotNetProject = true,
+						SkipiOSVariation = true,
+						SkiptvOSVariation = true,
+						SkipwatchOSVariation = true,
+						SkipTodayExtensionVariation = true,
+						SkipDeviceVariations = false,
+						GenerateVariations = false,
+						TestPlatform = TestPlatform.tvOS,
+						Ignore = dotnetIgnored,
+						Configurations = projectInfo.Configurations,
+					});
+				}
 
-				MacTestProjects.Add (new MacTestProject (projectInfo.Label, Path.GetFullPath (Path.Combine (RootDirectory, projectPath, "dotnet", "macOS", projectName + projExtension))) {
-					Name = projectName,
-					IsDotNetProject = true,
-					TargetFrameworkFlavors = MacFlavors.DotNet,
-					Platform = "AnyCPU",
-					Ignore = dotnetIgnored,
-					TestPlatform = TestPlatform.Mac,
-					Configurations = projectInfo.Configurations,
-				});
+				if (!macOSSkip.Contains (projectInfo.Label)) {
+					MacTestProjects.Add (new MacTestProject (projectInfo.Label, Path.GetFullPath (Path.Combine (RootDirectory, projectPath, "dotnet", "macOS", projectName + projExtension))) {
+						Name = projectName,
+						IsDotNetProject = true,
+						TargetFrameworkFlavors = MacFlavors.DotNet,
+						Platform = "AnyCPU",
+						Ignore = dotnetIgnored,
+						TestPlatform = TestPlatform.Mac,
+						Configurations = projectInfo.Configurations,
+					});
+				}
 
-				MacTestProjects.Add (new MacTestProject (projectInfo.Label, Path.GetFullPath (Path.Combine (RootDirectory, projectPath, "dotnet", "MacCatalyst", projectName + projExtension))) {
-					Name = projectName,
-					IsDotNetProject = true,
-					TargetFrameworkFlavors = MacFlavors.MacCatalyst,
-					Platform = "AnyCPU",
-					Ignore = dotnetIgnored,
-					TestPlatform = TestPlatform.MacCatalyst,
-					Configurations = projectInfo.Configurations,
-				});
+				if (!macCatalystSkip.Contains (projectInfo.Label)) {
+					MacTestProjects.Add (new MacTestProject (projectInfo.Label, Path.GetFullPath (Path.Combine (RootDirectory, projectPath, "dotnet", "MacCatalyst", projectName + projExtension))) {
+						Name = projectName,
+						IsDotNetProject = true,
+						TargetFrameworkFlavors = MacFlavors.MacCatalyst,
+						Platform = "AnyCPU",
+						Ignore = dotnetIgnored,
+						TestPlatform = TestPlatform.MacCatalyst,
+						Configurations = projectInfo.Configurations,
+					});
+				}
 			}
 		}
 

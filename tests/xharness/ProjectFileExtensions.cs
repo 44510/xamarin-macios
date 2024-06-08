@@ -17,7 +17,7 @@ using Xamarin.Utils;
 
 namespace Xharness {
 	public static class EvolvedProjectFileExtensions {
-		public static void SetProperty (this XmlDocument csproj, string key, string value)
+		public static void SetProperty (this XmlDocument csproj, string key, string value, bool last = true)
 		{
 			// Set all existing properties
 			var xmlNodeList = csproj.SelectNodes ("/*[local-name() = 'Project']/*[local-name() = 'PropertyGroup']/*[local-name() = '" + key + "']")!.Cast<XmlNode> ();
@@ -25,7 +25,7 @@ namespace Xharness {
 				item.InnerText = value;
 
 			// Create a new one as well, in case any of the other ones are for a different configuration.
-			var propertyGroup = GetLastPropertyGroup (csproj);
+			var propertyGroup = GetSpecificPropertyGroup (csproj, last);
 			var mea = csproj.CreateElement (key, csproj.GetNamespace ());
 			mea.InnerText = value;
 			propertyGroup.AppendChild (mea);
@@ -41,14 +41,9 @@ namespace Xharness {
 			propertyGroup.InsertBefore (csproj.CreateComment ($" This property was created by xharness "), newNode);
 		}
 
-		public static void AppendExtraMtouchArgs (this XmlDocument csproj, string value)
+		public static void AppendAppBundleExtraOptions (this XmlDocument csproj, string value)
 		{
-			csproj.AppendToProperty ("MtouchExtraArgs", value, " ");
-		}
-
-		public static void AppendMonoBundlingExtraArgs (this XmlDocument csproj, string value)
-		{
-			csproj.AppendToProperty ("MonoBundlingExtraArgs", value, " ");
+			csproj.AppendToProperty ("AppBundleExtraOptions", value, " ");
 		}
 
 		static int IndexOf (this XmlNodeList @this, XmlNode node)
@@ -62,42 +57,55 @@ namespace Xharness {
 
 		static XmlElement GetLastPropertyGroup (this XmlDocument csproj)
 		{
-			// Is the last property group Condition-less? If so, return it.
-			// Definition of last: the last PropertyGroup before an Import node (or last in file if there are no Import nodes)
+			return GetSpecificPropertyGroup (csproj, true);
+		}
+
+		static XmlElement GetSpecificPropertyGroup (this XmlDocument csproj, bool last /* or first */)
+		{
+			// If last:
+			// 		Is the last property group Condition-less? If so, return it.
+			// 		Definition of last: the last PropertyGroup before an Import node (or last in file if there are no Import nodes)
 			var propertyGroups = csproj.SelectNodes ("/*[local-name() = 'Project']/*[local-name() = 'PropertyGroup']")!.Cast<XmlElement> ();
 			var imports = csproj.SelectNodes ("/*[local-name() = 'Project']/*[local-name() = 'Import']")!.Cast<XmlElement> ();
 			if (propertyGroups.Any ()) {
-				XmlElement? last = null;
+				XmlElement? specific = null;
 
-				if (imports.Any ()) {
+				if (last && imports.Any ()) {
 					var firstImport = imports.First ();
 					var firstImportIndex = firstImport.ParentNode!.ChildNodes.IndexOf (firstImport);
 					foreach (var pg in propertyGroups) {
 						var pgIndex = pg.ParentNode!.ChildNodes.IndexOf (pg);
 						if (pgIndex < firstImportIndex) {
-							last = pg;
+							specific = pg;
 						} else {
 							break;
 						}
 					}
 				} else {
-					last = propertyGroups.Last ();
+					specific = last ? propertyGroups.Last () : propertyGroups.First ();
 				}
 
-				if (last?.HasAttribute ("Condition") == false)
-					return last;
+				if (specific?.HasAttribute ("Condition") == false)
+					return specific;
 			}
 
 			// Create a new PropertyGroup, and add it either:
-			// * Just before the first Import node
-			// * If no Import node, then after the last PropertyGroup.
+			// If last:
+			//     * Just before the first Import node
+			//     * If no Import node, then after the last PropertyGroup.
+			// If first:
+			//     * At the very top, before the first PropertyGroup
 			var projectNode = csproj.SelectSingleNode ("//*[local-name() = 'Project']")!;
 			var newPropertyGroup = csproj.CreateElement ("PropertyGroup", csproj.GetNamespace ());
-			if (imports.Any ()) {
+			if (last && imports.Any ()) {
 				projectNode.InsertBefore (newPropertyGroup, imports.First ());
 			} else {
-				var lastPropertyGroup = csproj.SelectNodes ("/*[local-name() = 'Project']/*[local-name() = 'PropertyGroup']")!.Cast<XmlNode> ().Last ();
-				projectNode.InsertAfter (newPropertyGroup, lastPropertyGroup);
+				var allPropertyGroups = csproj.SelectNodes ("/*[local-name() = 'Project']/*[local-name() = 'PropertyGroup']")!.Cast<XmlNode> ();
+				if (last) {
+					projectNode.InsertAfter (newPropertyGroup, allPropertyGroups.Last ());
+				} else {
+					projectNode.InsertBefore (newPropertyGroup, allPropertyGroups.First ());
+				}
 			}
 			projectNode.InsertBefore (csproj.CreateComment ($" This property group was created by xharness "), newPropertyGroup);
 			return newPropertyGroup;
@@ -182,6 +190,24 @@ namespace Xharness {
 			}
 		}
 
+		public static void AddTopLevelInclude (this XmlDocument csproj, string type, string link, string include, bool prepend = false)
+		{
+			var type_node = csproj.SelectSingleNode ($"//*[local-name() = '{type}']");
+			var item_group = type_node?.ParentNode ?? csproj.SelectSingleNode ($"/Project/*[local-name() = 'ItemGroup'][last()]")!;
+			var node = csproj.CreateElement (type, csproj.GetNamespace ());
+			var include_attribute = csproj.CreateAttribute ("Include");
+			include_attribute.Value = include;
+			node.Attributes.Append (include_attribute);
+			var linkElement = csproj.CreateElement ("Link", csproj.GetNamespace ());
+			linkElement.InnerText = link;
+			node.AppendChild (linkElement);
+			if (prepend) {
+				item_group.PrependChild (node);
+			} else {
+				item_group.AppendChild (node);
+			}
+		}
+
 		// This is an evolved version of https://github.com/dotnet/xharness/blob/b2297d610df1ae15fc7ba8bd8c9bc0a7192aaefa/src/Microsoft.DotNet.XHarness.iOS.Shared/Utilities/ProjectFileExtensions.cs#L1168
 		public static void ResolveAllPaths (this XmlDocument csproj, string project_path, Dictionary<string, string>? variableSubstitution = null)
 		{
@@ -228,6 +254,8 @@ namespace Xharness {
 			var nodes_with_variables = new string []
 			{
 				"MtouchExtraArgs",
+				"AppBundleExtraOptions",
+				"MonoBundlingExtraArgs",
 			};
 			Func<string, string>? convert = null;
 			convert = (input) => {
